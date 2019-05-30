@@ -1,0 +1,7 @@
+[package]
+name = "acorn"
+version = "0.1.0"
+authors = ["johannesvollmer <johannes.boenki@t-online.de>"]
+edition = "2018"
+
+[dependencies]

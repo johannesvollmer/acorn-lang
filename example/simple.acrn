@@ -1,0 +1,165 @@
+
+// import statements are just alias assignments
+List = std.List
+
+// destructuring, used to import functions from math
+
+& cos & sin & pi = std.math
+
+
+// internal operator definitions
+// must be declared in every module again to avoid confusion?
+++ = List.append
++ = Int32.add
+
+
+// tuples are composed types with unnamed members using the operator ","
+
+add = ,a ,b -> a + b
+
+add: Int32, Int32 -> Int32 =
+  a, b ->
+    add_to_a = (+) a
+    add_to_a b
+
+
+
+// partial evaluation
+five: Int32 = 5
+add_five: Int32 -> Int32 = add $, five
+
+// data structures:
+File =
+  & name: String
+  & age: Int64
+  & protection: Protection
+
+Protection =
+  | public
+  | private: User
+
+Bool = | true | false
+
+// type parameters (type function) (could include compile-time array size integer parameters?)
+Either = ,A ,B => | left A | right B
+Number = Either (,String ,Int64)
+
+Maybe = A => | some A | none
+
+map: ,A ,B =>
+  : ,(Maybe A) ,(A -> B) -> Maybe B
+    =
+      ,maybe ,action ->
+        maybe
+          @ Maybe.some: action  // a -> action a
+          @: Maybe.none
+
+
+map = maybe action ->
+  maybe
+      @ Maybe.some: action  // a -> action a
+      @: Maybe.none
+
+
+
+// instantiation
+default_user = "New User"
+default_protection = Protection.private default_user
+
+default_file =
+  & name = "New File.idk"
+  & protection = default_protection
+  & age = 0
+
+
+
+// match statements:
+
+message =
+  default_protection
+    @ Protection.private "Peter": peter_user ->
+      "Access granted to Peter"
+
+    @ Protection.private: user ->
+      "Access granted to " ++ user
+
+    @ Protection.public:
+      "Access granted to everyone"
+
+
+map = action, option ->
+  option
+    @ Option.some: value -> action value // or `action $`
+    @ Option.none: Option.none
+
+non_zero = number ->
+  @ number == 0: Option.none
+  @: Option.some number
+
+
+// if-statement
+positive = number ->
+  @ number <= 0: Option.none
+  @: Option.some $
+
+
+is_some = option ->
+  option
+    @ Option.some: _ -> Bool.true
+    @ Option.none: Bool.false
+
+non_empty = string ->
+  @ length string == 0: Option.some string
+  @: Option.none
+
+
+// currying is explicit for obviousness,
+// and to allow currying any (not just the last) argument
+
+cons = element, list -> element :: list
+add_name = cons ($, all_names) // same as add_name = name -> cons (name, all_names)
+
+
+// currying can be done with any value, for example struct or tuple instantiation
+adult_with_name: String -> Person =
+  & age = 18 & name = $
+
+greater_5 = $ > 5
+get_name = $.name
+
+display_name person = maybe.with_default "unknown" (maybe.map person $.name)
+
+
+// multi line functions
+full_name = person ->
+  { first & last = person.name }
+  first ++ " " ++ last
+
+
+
+
+// in module vec2:
+
+Vector2 =
+  & x: Float64
+  & y: Float64
+
+
+add = a, b ->
+  & x = a.x + b.x
+  & y = a.y + b.y
+
+add =
+  , (&x0 = x &y0 = y)
+  , (&x1 = x &y1 = y)
+  ->
+    & x = x0 + x1
+    & y = y0 + y1
+
+
+
+
+
+
+
+
