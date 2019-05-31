@@ -1,89 +1,114 @@
-
-type Text<'a> = &'a str;
+pub type Text<'a> = &'a str;
 
 // List, new, +, ...
-type Identifier<'a> = Text<'a>;
+pub type Identifier<'a> = Text<'a>;
 
 // std.List, List.new, pet.name, ...
-type Reference<'a> = Vec<Identifier<'a>>;
+pub type Reference<'a> = Vec<Identifier<'a>>;
 
-// TODO arguments and assignments should support destructuring
-// case-expressions not supported yet
+// any values, including case-expressions, not supported yet
 
 
 // name: String, age = 5, name: String = "Peter"
 #[derive(Eq, PartialEq, Debug)]
-struct Definition<'a> {
-    binding: Binding<'a>, // :
-    kind: Option<Kind<'a>>, // =
+pub struct Definition<'a> {
+    binding: Expression<'a>, // :
+    kind: Option<Expression<'a>>, // =
     expression: Expression<'a>
 }
 
-// variable name or destructuring assignment
+
 #[derive(Eq, PartialEq, Debug)]
-enum Binding<'a> {
-    Tuple(Vec<Binding<'a>>),
-    Product(Vec<(Text<'a>, Binding<'a>)>),
-    Plain(Text<'a>),
-}
+pub enum Expression<'a> {
+    Function (Function<'a>),
 
-// "Peter", List, std::List::new, a = b & b = b
-#[derive(Eq, PartialEq, Debug)]
-enum Expression<'a> {
-    Kind (Kind<'a>),
-    Value (Value<'a>)
-}
+    /// `a,b,c`, `A,B,C`, also used for depub structuring assignments
+    Tuple (Vec<Expression<'a>>),
 
+    /// `| a | b: B | c`,  `|value = 5`, `|empty`, `|value: A |empty`
+    Sum (Vec<(Identifier<'a>, Option<Expression<'a>>)>),
 
-// String, List, & name: String & age: Int32
-#[derive(Eq, PartialEq, Debug)]
-enum Kind<'a> {
-    Function { from: Box<Kind<'a>>, to: Box<Kind<'a>> },
-    Tuple (Vec<Kind<'a>>),
-    Sum (Vec<(Identifier<'a>, Option<Kind<'a>>)>),
-    Product (Vec<(Identifier<'a>, Kind<'a>)>),
-    Alias (Reference<'a>),
-}
+    /// `& a = 5 & b = 6`, `a: A & b: C`, also used for depub structuring assignments, ...
+    Product (Vec<(Identifier<'a>, Expression<'a>)>),
 
+    /// std.string.String, Int, window.width, ...
+    Named (Reference<'a>),
 
-// name, "Pete", 0, 1, a = 0 & b = "c", a -> a
-#[derive(Eq, PartialEq, Debug)]
-enum Value<'a> {
-    Function (FunctionValue<'a>),
-    Tuple (Vec<Value<'a>>),
-    Variant (Reference<'a>, Box<Value<'a>>),
-    Product(Vec<(Identifier<'a>, Value<'a>)>),
-    Call (FunctionCall<'a>),
-    Alias (Reference<'a>), // variable references
+    /// `get_name person`, `List Int`, `get_name $` ...
+    FunctionApplication (FunctionApplication<'a>),
+
+    /// multi-line function bodies, modules, ...
+    Scope (Scope<'a>),
+
     String (Text<'a>),
     Number (Text<'a>),
 }
 
-// add 5, a + b,
+
+/// `get_name person`, `Option.some 5`, `List Int`, ...
 #[derive(Eq, PartialEq, Debug)]
-struct FunctionCall<'a> {
-    function: Box<Value<'a>>,
-    argument: Box<Value<'a>>
+pub struct FunctionApplication<'a> {
+    subject: Box<Expression<'a>>,
+    argument: Box<Expression<'a>>
 }
 
-// a,b -> a + b
+/// includes function pub type declarations but also lambda expressions
 #[derive(Eq, PartialEq, Debug)]
-struct FunctionValue<'a> {
-    parameter: Binding<'a>,
+pub struct Function<'a> {
+    parameter: Box<Expression<'a>>, // for a lambda, this is a depub structuring or reference
+    result: Box<Expression<'a>>
+}
+
+#[derive(Eq, PartialEq, Debug)]
+pub struct Scope<'a> {
     definitions: Vec<Definition<'a>>,
-    result: Box<Value<'a>>
+    result: Box<Expression<'a>>
+}
+
+
+pub enum ValueOrKind {
+    Value,
+    Kind
+}
+
+impl Expression<'_> {
+    /// otherwise, is kind
+    pub fn is_value(&self) -> bool {
+        match self {
+            Expression::String(_) => true,
+            Expression::Number(_) => true,
+            Expression::Named(names) => reference_is_value(names),
+            Expression::Tuple(members) => members[0].is_value(),
+            Expression::Sum(members) => members[0].1.as_ref().unwrap().is_value(),
+            Expression::Product(members) => members[0].1.is_value(),
+            _ => panic!()
+        }
+    }
+}
+
+fn reference_is_value(reference: &Reference) -> bool {
+    match reference.last() {
+        Some(name) => {
+            match name.chars().next() {
+                Some(first_letter) => !first_letter.is_uppercase(),
+                None => panic!()
+            }
+        },
+
+        None => panic!()
+    }
 }
 
 
 
-// identifier : type = value
+/// identifier : pub type = value
 fn parse_definition(text: Text) -> (Definition, Text) {
-    let (binding, text) = parse_binding(text);
+    let (binding, text) = parse_expression(text);
     let text = skip_white(text);
 
     let (type_annotation, text) = {
         if let Some(text) = skip_symbol(text, ":"){
-            let (kind, text) = parse_kind(text);
+            let (kind, text) = parse_expression(text);
             (Some(kind), text)
         }
         else {
@@ -94,17 +119,7 @@ fn parse_definition(text: Text) -> (Definition, Text) {
     let text = skip_white(text);
     let text = skip_symbol(text, "=").unwrap();
 
-    let (expression, text) = {
-        if binding.chars().next().unwrap().is_uppercase() {
-            let (kind, text) = parse_kind(text);
-            (Expression::Kind(kind), text)
-        }
-        else {
-            // let (kind, text) = parse_value(text);
-            // (Expression::Value(kind), text)
-            panic!()
-        }
-    };
+    let (expression, text) = parse_expression(text);
 
     (
         Definition { binding, kind: type_annotation, expression },
@@ -113,44 +128,49 @@ fn parse_definition(text: Text) -> (Definition, Text) {
 }
 
 
-
-fn parse_kind(text: Text) -> (Kind, Text) {
-    parse_function_or_other_kind(text)
+fn parse_expression(text: Text) -> (Expression, Text) {
+    parse_function_or_other(text)
 }
 
-fn parse_function_or_other_kind(text: Text) -> (Kind, Text) {
-    let (first_kind, text) = parse_tuple_or_other_kind(text);
+fn parse_function_or_other(text: Text) -> (Expression, Text) {
+    let (first_kind, text) = parse_tuple_or_other(text);
     let text = skip_white(text);
 
     if let Some(text) = skip_symbol(text, "->") {
-        let (output, text) = parse_kind(text);
-        (Kind::Function { from:  Box::new(first_kind), to: Box::new(output) }, text)
+        let (output, text) = parse_expression(text);
+        (Expression::Function(Function {
+            parameter: Box::new(first_kind),
+            result: Box::new(output)
+        }), text)
     }
     else {
         (first_kind, text)
     }
 }
 
-fn parse_tuple_or_other_kind(text: Text) -> (Kind, Text) {
-    let (first, mut text) = parse_sum_or_other_kind(text);
+fn parse_tuple_or_other(text: Text) -> (Expression, Text) {
+    let text = skip_white(text);
+    let text = skip_symbol(text, ",").unwrap_or(text); // TODO respect this info?
+
+    let (first, mut text) = parse_sum_or_other(text);
 
     if text.starts_with(","){
         let mut members = vec![ first ];
 
         while let Some(remaining) = skip_symbol(text, ",") {
-            let (kind, remaining_text) = parse_sum_or_other_kind(remaining);
+            let (kind, remaining_text) = parse_sum_or_other(remaining);
             text = skip_white(remaining_text);
             members.push(kind);
         }
 
-        (Kind::Tuple(members), text)
+        (Expression::Tuple(members), text)
     }
     else {
         (first, text)
     }
 }
 
-fn parse_sum_or_other_kind(text: Text) -> (Kind, Text) {
+fn parse_sum_or_other(text: Text) -> (Expression, Text) {
     let text = skip_white(text);
 
     if text.starts_with("|") {
@@ -161,27 +181,31 @@ fn parse_sum_or_other_kind(text: Text) -> (Kind, Text) {
             let (member_name, remaining) = parse_identifier(remaining);
             let mut remaining = skip_white(remaining);
 
-            let (member_kind, remaining) = if remaining.starts_with(":") {
-                remaining = skip_white(&remaining[":".len() ..]);
-                let (member, remaining) = parse_product_or_other_kind(remaining);
-                (Some(member), remaining)
-            }
-            else {
-                (None, remaining)
+            let (member_kind, remaining) = {
+
+                if let Some(remaining) = skip_symbol(remaining, ":")
+                    .or(skip_symbol(remaining, "=")) // TODO remember pub type vs value
+                {
+                    let (member, remaining) = parse_product_or_other(remaining);
+                    (Some(member), remaining)
+                }
+                else {
+                    (None, remaining)
+                }
             };
 
             text = skip_white(remaining);
             members.push((member_name, member_kind));
         }
 
-        (Kind::Sum(members), text)
+        (Expression::Sum(members), text)
     }
     else {
-        parse_product_or_other_kind(text)
+        parse_product_or_other(text)
     }
 }
 
-fn parse_product_or_other_kind(text: Text) -> (Kind, Text) {
+fn parse_product_or_other(text: Text) -> (Expression, Text) {
     let text = skip_white(text);
 
     if text.starts_with("&") {
@@ -191,18 +215,19 @@ fn parse_product_or_other_kind(text: Text) -> (Kind, Text) {
         while let Some(remaining) = skip_symbol(text, "&") {
             //if let Some(letter) = remaining.chars().next() {
             //    if letter.is_lowercase() { // parse named member
-                    let (member_name, remaining) = parse_identifier(remaining);
-                    let mut remaining = skip_white(remaining);
+            let (member_name, remaining) = parse_identifier(remaining);
+            let mut remaining = skip_white(remaining);
 
-                    if remaining.starts_with(":") { remaining = skip_white(&remaining[":".len() ..]); }
-                    else { panic!("invalid composition member declaration: missing `:`") }
+            let remaining = skip_symbol(remaining, ":")
+                .or(skip_symbol(remaining, "=")) // TODO remember pub type vs value
+                .unwrap();
 
-                    let (member_kind, remaining) = parse_reference_or_parentheses_kind(remaining);
+            let (member_kind, remaining) = parse_atom(remaining);
 
-                    text = skip_white(remaining);
-                    members.push((member_name, member_kind));
+            text = skip_white(remaining);
+            members.push((member_name, member_kind));
             //    }
-            //    else { // parse base type
+            //    else { // parse base pub type
 
             //    }
 //            }
@@ -211,35 +236,56 @@ fn parse_product_or_other_kind(text: Text) -> (Kind, Text) {
 //            }
         }
 
-        (Kind::Product(members), text)
+        (Expression::Product(members), text)
     }
     else {
-        parse_reference_or_parentheses_kind(text)
+        parse_atom(text)
     }
 }
 
-fn parse_reference_or_parentheses_kind(text: Text) -> (Kind, Text) {
-    let mut text = skip_white(text);
+fn parse_atom(text: Text) -> (Expression, Text) {
+    let text = skip_white(text);
 
-    if let Some(remaining) = skip_symbol(text, "(") {
-        let (contents, remaining) = parse_kind(remaining);
+    if let Some((number, remaining)) = parse_number(text) {
+        (Expression::Number(number), remaining)
+    }
+    else if let Some(remaining) = skip_symbol(text, "(") {
+        let (contents, remaining) = parse_expression(remaining);
 
         let mut remaining = skip_white(remaining);
-        if !remaining.starts_with(")") { panic!("Expected `)`") }
-        else { remaining = &remaining[")".len() ..] }
-
+        let remaining = skip_symbol(remaining, ")").unwrap();
         (contents, remaining)
+    }
+    else if let Some(remaining) = skip_symbol(text, "\"") {
+        if let Some(end_index) = remaining.find(|c| c == '"') {
+            let (string, remaining) = remaining.split_at(end_index);
+            let remaining = skip_symbol(remaining, "\"").unwrap();
+            (Expression::String(string), remaining)
+        }
+        else { panic!("Expected closing `\"`") }
     }
     else {
         let (reference, remaining) = parse_reference(text);
-        if reference.is_empty() { panic!("expected type declaration") }
-        (Kind::Alias(reference), remaining)
+        if reference.is_empty() { panic!("expected pub type declaration") }
+        (Expression::Named(reference), remaining)
     }
 }
 
+fn parse_number(text: Text) -> Option<(Text, Text)> {
+    let end_index = skip_white(text)
+        .find(|c:char| !(c.is_digit(10) || c == '.'));
 
-fn parse_reference(mut text: Text) -> (Reference, Text) {
-    let (first, text) = parse_identifier(text)/*?*/;
+    if let Some(index) = end_index {
+        if index == 0 { None }
+        else { Some(text.split_at(index)) }
+    }
+    else {
+        Some((text, ""))
+    }
+}
+
+fn parse_reference(text: Text) -> (Reference, Text) {
+    let (first, text) = parse_identifier(skip_white(text))/*?*/;
     let mut parts = vec![ first ];
 
     let mut text = skip_white(text);
@@ -263,7 +309,7 @@ fn parse_identifier(text: Text) -> (Text, Text) {
 
     if let Some(identifier_end) = text.find(is_not_identifier){
         if identifier_end == 0
-            { panic!("Expected identifier") }
+            { panic!("Expected identifier, found `{}`", text) }
 
         text.split_at(identifier_end)
     }
@@ -299,7 +345,7 @@ mod test {
 
     macro_rules! reference {
         ($($identifier:ident).*) => {
-            Kind::Alias(vec![
+            Expression::Named(vec![
                 $(stringify!($identifier),)*
             ])
         };
@@ -312,12 +358,12 @@ mod test {
             parse_definition("Name = | name: std.string.String | anonymous"),
             (
                 Definition {
-                    binding: Binding::Plain("Name"),
+                    binding: reference!{ Name },
                     kind: None,
-                    expression: Expression::Kind(Kind::Sum(vec![
+                    expression: Expression::Sum(vec![
                         ("name", Some(reference!{ std.string.String })),
                         ("anonymous", None),
-                    ]))
+                    ])
                 }
                 , ""
             )
@@ -325,65 +371,77 @@ mod test {
     }
 
     #[test]
-    fn test_parse_binding(){
-        assert_eq!(parse_binding("Name"), (Binding::Plain("Name"), ""));
-        assert_eq!(parse_binding("(Name, "), (Binding::Plain("Name"), ""));
+    fn test_parse_atom(){
+        assert_eq!(parse_expression(" Name"), (reference!{ Name }, ""));
+        assert_eq!(parse_expression(" a.Name n"), (reference!{ a.Name }, "n"));
+        assert_eq!(parse_expression(" a3.1Name 0n"), (Expression::Named(vec!["a3", "1Name"]), "0n"));
+        assert_eq!(parse_expression(" 3.1 0n"), (Expression::Number("3.1"), "0n"));
+        assert_eq!(parse_expression(" \"legendary\"xo"), (Expression::String("legendary"), "xo"));
     }
 
 
     #[test]
     fn test_parse_function_or_other_kind(){
         assert_eq!(
-            parse_function_or_other_kind("| name: std.String | anonymous"),
-            (Kind::Sum(vec![
+            parse_function_or_other("| name: std.String | anonymous"),
+            (Expression::Sum(vec![
                 ("name", Some(reference!{ std.String })),
                 ("anonymous", None),
             ] ), "")
         );
 
         assert_eq!(
-            parse_function_or_other_kind("String -> Int"),
-            (Kind::Function {
-                from: Box::new(reference!{ String }),
-                to: Box::new(reference!{ Int }),
-            }, "")
+            parse_function_or_other("String -> Int"),
+            (Expression::Function(Function {
+                parameter: Box::new(reference!{ String }),
+                result: Box::new(reference!{ Int }),
+            }), "")
         );
 
         assert_eq!(
-            parse_function_or_other_kind("String -> ,Int,String"),
-            (Kind::Function {
-                from: Box::new(reference!{ String }),
-                to: Box::new(Kind::Tuple(vec![
+            parse_function_or_other("String -> ,Int,String"),
+            (Expression::Function(Function {
+                parameter: Box::new(reference!{ String }),
+                result: Box::new(Expression::Tuple(vec![
                     reference!{ Int },
                     reference!{ String }
                 ])),
-            }, "")
+            }), "")
         );
     }
 
     #[test]
     fn test_parse_tuple_or_other_kind(){
         assert_eq!(
-            parse_tuple_or_other_kind("| name: std.String | anonymous"),
-            (Kind::Sum(vec![
+            parse_tuple_or_other("| name: std.String | anonymous"),
+            (Expression::Sum(vec![
                 ("name", Some(reference!{ std.String })),
                 ("anonymous", None),
             ] ), "")
         );
 
         assert_eq!(
-            parse_tuple_or_other_kind(",Float ,str.String ,Int"),
-            (Kind::Tuple(vec![
+            parse_tuple_or_other(",Float ,str.String ,Int"),
+            (Expression::Tuple(vec![
                 reference!{ Float },
                 reference!{ str.String },
                 reference!{ Int },
             ]), "")
         );
 
+        /*assert_eq!(
+            parse_tuple_or_other(r#" , 5 , "hello" , Int"#),
+            (Expression::Tuple(vec![
+                Expression::Number("5"),
+                Expression::String("hello"),
+                reference!{ Int },
+            ]), "")
+        );*/ // FIXME
+
         assert_eq!(
-            parse_tuple_or_other_kind(",&name:String&age:Int ,str.String ,Int"),
-            (Kind::Tuple(vec![
-                Kind::Product(vec![
+            parse_tuple_or_other(",&name:String&age:Int ,str.String ,Int"),
+            (Expression::Tuple(vec![
+                Expression::Product(vec![
                     ("name", reference!{ String }),
                     ("age", reference!{ Int }),
                 ]),
@@ -396,28 +454,28 @@ mod test {
 
     #[test]
     fn test_parse_sum_or_other_kind(){
-        assert_eq!(parse_sum_or_other_kind(" std .str .String ->"), (reference!{ std.str.String }, "->"));
+        assert_eq!(parse_sum_or_other(" std .str .String ->"), (reference!{ std.str.String }, "->"));
 
         assert_eq!(
-            parse_sum_or_other_kind("& name: String &age : num.Int"),
-            (Kind::Product(vec![
+            parse_sum_or_other("& name: String &age : num.Int"),
+            (Expression::Product(vec![
                 ("name", reference!{ String }),
                 ("age", reference!{ num.Int }),
             ]), "")
         );
 
         assert_eq!(
-            parse_sum_or_other_kind("| name: std.String | anonymous"),
-            (Kind::Sum(vec![
+            parse_sum_or_other("| name: std.String | anonymous"),
+            (Expression::Sum(vec![
                 ("name", Some(reference!{ std.String })),
                 ("anonymous", None),
             ] ), "")
         );
 
         assert_eq!(
-            parse_sum_or_other_kind("| name: &value: std.String &length: Int | anonymous"),
-            (Kind::Sum(vec![
-                ("name", Some(Kind::Product(vec![
+            parse_sum_or_other("| name: &value: std.String &length: Int | anonymous"),
+            (Expression::Sum(vec![
+                ("name", Some(Expression::Product(vec![
                     ("value", reference!{ std.String }),
                     ("length", reference!{ Int }),
                 ]))),
@@ -428,15 +486,23 @@ mod test {
 
     #[test]
     fn test_parse_product_or_other_kind(){
-        assert_eq!(parse_product_or_other_kind(" String ->"), (reference!{ String }, "->"));
-        assert_eq!(parse_product_or_other_kind(" std.String ->"), (reference!{ std.String }, "->"));
-        assert_eq!(parse_product_or_other_kind(" std .str .String ->"), (reference!{ std.str.String }, "->"));
+        assert_eq!(parse_product_or_other(" String #"), (reference!{ String }, "#"));
+        assert_eq!(parse_product_or_other(" std.String #"), (reference!{ std.String }, "#"));
+        assert_eq!(parse_product_or_other(" std .str .String #"), (reference!{ std.str.String }, "#"));
 
         assert_eq!(
-            parse_sum_or_other_kind("& name: String &age : num.Int"),
-            (Kind::Product(vec![
-                ("name", Kind::Alias(vec!["String"])),
-                ("age", Kind::Alias(vec!["num", "Int"])),
+            parse_sum_or_other("& name: String &age : num.Int"),
+            (Expression::Product(vec![
+                ("name", Expression::Named(vec!["String"])),
+                ("age", Expression::Named(vec!["num", "Int"])),
+            ]), "")
+        );
+
+        assert_eq!(
+            parse_sum_or_other(r#"& name = "world" &age = 12"#),
+            (Expression::Product(vec![
+                ("name", Expression::String("world")),
+                ("age", Expression::Number("12")),
             ]), "")
         );
     }
