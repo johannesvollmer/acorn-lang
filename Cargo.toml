@@ -5,3 +5,4 @@ authors = ["johannesvollmer <johannes.boenki@t-online.de>"]
 edition = "2018"
 
 [dependencies]
+smallvec = "*"

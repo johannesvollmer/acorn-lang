@@ -161,7 +161,11 @@ add =
     & y = y0 + y1
 
 
-
+// recursive types????
+List = T =>
+  | empty
+  | filled:
+      &value: T &tail: List T
 
 
 
