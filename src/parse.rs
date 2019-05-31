@@ -12,15 +12,15 @@ pub type Reference<'a> = Vec<Identifier<'a>>;
 
 #[derive(Eq, PartialEq, Debug)]
 pub struct File<'a> {
-    definitions: Vec<Definition<'a>>
+    pub definitions: Vec<Definition<'a>>
 }
 
 // name: String, age = 5, name: String = "Peter"
 #[derive(Eq, PartialEq, Debug)]
 pub struct Definition<'a> {
-    binding: Expression<'a>, // :
-    kind: Option<Expression<'a>>, // =
-    expression: Expression<'a>
+    pub binding: Expression<'a>, // :
+    pub kind: Option<Expression<'a>>, // =
+    pub expression: Expression<'a>
 }
 
 
@@ -28,13 +28,13 @@ pub struct Definition<'a> {
 pub enum Expression<'a> {
     Function (Function<'a>),
 
-    /// `a,b,c`, `A,B,C`, also used for depub structuring assignments
+    /// `a,b,c`, `A,B,C`, also used for destructuring assignments
     Tuple (Vec<Expression<'a>>),
 
     /// `| a | b: B | c`,  `|value = 5`, `|empty`, `|value: A |empty`
     Sum (Vec<(Identifier<'a>, Option<Expression<'a>>)>),
 
-    /// `& a = 5 & b = 6`, `a: A & b: C`, also used for depub structuring assignments, ...
+    /// `& a = 5 & b = 6`, `a: A & b: C`, also used for destructuring assignments, ...
     Product (Vec<(Identifier<'a>, Expression<'a>)>),
 
     /// std.string.String, Int, window.width, ...
@@ -54,21 +54,21 @@ pub enum Expression<'a> {
 /// `get_name person`, `Option.some 5`, `List Int`, ...
 #[derive(Eq, PartialEq, Debug)]
 pub struct FunctionApplication<'a> {
-    subject: Box<Expression<'a>>,
-    argument: Box<Expression<'a>>
+    pub subject: Box<Expression<'a>>,
+    pub argument: Box<Expression<'a>>
 }
 
 /// includes function pub type declarations but also lambda expressions
 #[derive(Eq, PartialEq, Debug)]
 pub struct Function<'a> {
-    parameter: Box<Expression<'a>>, // for a lambda, this is a depub structuring or reference
-    result: Box<Expression<'a>>
+    pub parameter: Box<Expression<'a>>, // for a lambda, this is a depub structuring or reference
+    pub result: Box<Expression<'a>>
 }
 
 #[derive(Eq, PartialEq, Debug)]
 pub struct Scope<'a> {
-    definitions: Vec<Definition<'a>>,
-    result: Box<Expression<'a>>
+    pub definitions: Vec<Definition<'a>>,
+    pub result: Box<Expression<'a>>
 }
 
 
@@ -224,7 +224,7 @@ fn parse_product_or_other(text: Text) -> ParseResult<(Expression, Text)> {
                 .or(skip_symbol(remaining, "=")) // TODO remember pub type vs value
                 .ok_or_else(|| ParseError::Expected { description: "`:` or `=`", found: remaining })?;
 
-            let (member_kind, remaining) = parse_atom(remaining)?;
+            let (member_kind, remaining) = parse_application(remaining)?;
 
             text = skip_white(remaining);
             members.push((member_name, member_kind));
@@ -241,7 +241,26 @@ fn parse_product_or_other(text: Text) -> ParseResult<(Expression, Text)> {
         Ok((Expression::Product(members), text))
     }
     else {
-        parse_atom(text)
+        parse_application(text)
+    }
+}
+
+// TODO: indention??
+fn parse_application(text: Text) -> ParseResult<(Expression, Text)> {
+    let (first, remaining) = parse_atom(text)?;
+    let remaining = skip_white(remaining);
+
+    if remaining.starts_with(|c:char| !"):=&|".contains(c)) {
+        let (argument, remaining) = parse_atom(remaining)?;
+        Ok((
+            Expression::FunctionApplication(FunctionApplication {
+                subject: Box::new(first), argument: Box::new(subject)
+            }),
+            remaining
+        ))
+    }
+    else {
+        (first, remaining)
     }
 }
 
@@ -361,6 +380,11 @@ fn skip_symbol<'a>(text: Text<'a>, symbol: &str) -> Option<Text<'a>> {
 fn skip_white(text: Text) -> Text {
     text.trim_start()
 }
+
+
+
+
+
 
 
 // TODO negative tests

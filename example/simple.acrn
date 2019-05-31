@@ -52,10 +52,9 @@ Option = A =>
   | empty
 
 
-map: ,A ,B =>
-  : ,(Maybe A) ,(A -> B) -> Maybe B
-    =
-      ,maybe ,action ->
+map: ,A ,B
+  => ,(Maybe A) ,(A -> B) -> Maybe B
+  = ,maybe ,action ->
         maybe
           @ Maybe.value: action  // a -> action a
           @: Maybe.empty
@@ -166,6 +165,31 @@ List = T =>
   | empty
   | filled:
       &value: T &tail: List T
+
+
+
+
+// type parameter destructuring:
+Dict = (A, B) => ...
+
+Result = (& error: E & result: T) =>
+  result: T | error: E
+
+MyResult = Result (&error = String, &result = $)
+
+
+
+// idea: fake native types
+Bool =
+  | true
+  | false
+
+Int8 = 0 | 1 | 2 | ... | 255
+
+Float32 = ... | 0.0 | 0.0000001 | 0.000002 | ...  // TODO what about those dots?
+
+
+
 
 
 
