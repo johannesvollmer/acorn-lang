@@ -1,11 +1,10 @@
 pub type Id = usize;
 
 
+/*
 pub struct DefinitionModule {
-    kinds: Vec<Kind>,
-
     functions: Vec<FunctionDefinition>,
-    values: Vec<Expression>
+    values: Vec<Value>
 }
 
 
@@ -59,11 +58,9 @@ pub enum ConstantValue {
 }
 
 impl Expression {
-    /*pub fn evaluate(scope: &Scope) -> Value {
-
-    }*/
 }
 
+*/
 
 
 

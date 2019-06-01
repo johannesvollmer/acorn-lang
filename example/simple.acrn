@@ -19,14 +19,14 @@ add = ,a ,b -> a + b
 
 add: Int32, Int32 -> Int32 =
   a, b ->
-    add_to_a = (+) a
+    add_to_a = $ + a
     add_to_a b
 
 
 
 // partial evaluation
 five: Int32 = 5
-add_five: Int32 -> Int32 = add $, five
+add_five: Int32 -> Int32 = add ($, five)
 
 // data structures:
 File =
