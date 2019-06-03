@@ -250,7 +250,7 @@ fn parse_function_application(text: Source) -> ParseResult<(Expression, Source)>
     let (first, remaining) = parse_atom(text)?;
     let remaining = skip_white(remaining);
 
-    if remaining.starts_with(|c:char| !"):=&|,.@\"'".contains(c)) {
+    if remaining.starts_with(|c:char| c == '(' || !is_special_symbol(c)) {
         let (argument, remaining) = parse_atom(remaining)?;
         Ok((
             Expression::FunctionApplication(FunctionApplication {
@@ -294,6 +294,11 @@ fn parse_atom(text: Source) -> ParseResult<(Expression, Source)> {
     }
 }
 
+
+fn is_special_symbol(symbol: char) -> bool {
+    symbol.is_whitespace() || "$&|@,():=.\"'<->".contains(symbol)
+}
+
 fn parse_number(text: Source) -> Option<(Source, Source)> {
     let end_index = skip_white(text)
         .find(|c:char| !c.is_digit(10) && c != '.');
@@ -304,7 +309,7 @@ fn parse_number(text: Source) -> Option<(Source, Source)> {
             let successor = remaining.chars().next().unwrap();
 
             // do not parse number if is immediately continued with an identifier
-            if successor.is_whitespace() || "&|@,():=.\"'".contains(successor) {
+            if is_special_symbol(successor) {
                 Some((content, remaining))
             }
             else { None }
@@ -438,11 +443,11 @@ mod test {
 
     #[test]
     fn test_parse_atom(){
-        assert_eq!(parse_expression(" Name"), Ok((name!{ Name }, "")));
-        assert_eq!(parse_expression(" a.Name n"), Ok((name!{ a.Name }, "n")));
-        assert_eq!(parse_expression(" a3.1Name 0n"), Ok((Expression::Identifier(vec!["a3".to_owned(), "1Name".to_owned()]), "0n")));
-        assert_eq!(parse_expression(" 3.1 0n"), Ok((Expression::Number("3.1".to_owned()), "0n")));
-        assert_eq!(parse_expression(" \"legendary\"xo"), Ok((Expression::String("legendary".to_owned()), "xo")));
+        assert_eq!(parse_atom(" Name"), Ok((name!{ Name }, "")));
+        assert_eq!(parse_atom(" a.Name n"), Ok((name!{ a.Name }, "n")));
+        assert_eq!(parse_atom(" a3.1Name 0n"), Ok((Expression::Identifier(vec!["a3".to_owned(), "1Name".to_owned()]), "0n")));
+        assert_eq!(parse_atom(" 3.1 0n"), Ok((Expression::Number("3.1".to_owned()), " 0n")));
+        assert_eq!(parse_atom(" \"legendary\"xo"), Ok((Expression::String("legendary".to_owned()), "xo")));
     }
 
 
@@ -563,9 +568,9 @@ mod test {
 
     #[test]
     fn test_parse_product_or_other_kind(){
-        assert_eq!(parse_product_or_other(" String #"), Ok((name!{ String }, "#")));
-        assert_eq!(parse_product_or_other(" std.String #"), Ok((name!{ std.String }, "#")));
-        assert_eq!(parse_product_or_other(" std .str .String #"), Ok((name!{ std.str.String }, "#")));
+        assert_eq!(parse_product_or_other(" String"), Ok((name!{ String }, "")));
+        assert_eq!(parse_product_or_other(" std.String"), Ok((name!{ std.String }, "")));
+        assert_eq!(parse_product_or_other(" std .str .String"), Ok((name!{ std.str.String }, "")));
 
         assert_eq!(
             parse_sum_or_other("& name: String &age : num.Int"),
