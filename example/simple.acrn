@@ -176,7 +176,7 @@ Result = (& error: E & result: T) =>
   result: T | error: E
 
 MyResult = Result (&error = String, &result = $)
-
+Arg -> Result = ParseResultFunction
 
 
 // idea: fake native types

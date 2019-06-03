@@ -32,10 +32,10 @@ pub enum Expression {
     Tuple (Vec<Expression>),
 
     /// `| a | b: B | c`,  `|value = 5`, `|empty`, `|value: A |empty`
-    Sum (Vec<(Identifier, Option<Expression>)>),
+    Sum (Vec<Variant>),
 
     /// `& a = 5 & b = 6`, `a: A & b: C`, also used for destructuring assignments, ...
-    Product (Vec<(Identifier, Expression)>),
+    Product (Vec<ProductMember>),
 
     /// std.string.String, Int, window.width, ...
     Identifier(Reference),
@@ -50,6 +50,26 @@ pub enum Expression {
     Number (String),
 }
 
+
+#[derive(Clone, Eq, PartialEq, Debug)]
+pub struct Variant {
+    pub name: Identifier,
+    pub content: Option<VariantContent>,
+}
+
+#[derive(Clone, Eq, PartialEq, Debug)]
+pub struct VariantContent {
+    pub expression: Expression,
+    pub operator: char, // may be `=` or `:`
+}
+
+
+#[derive(Clone, Eq, PartialEq, Debug)]
+pub struct ProductMember {
+    pub name: Identifier,
+    pub expression: Expression,
+    pub operator: char, // may be `=` or `:`
+}
 
 /// `get_name person`, `Option.some 5`, `List Int`, ...
 #[derive(Clone, Eq, PartialEq, Debug)]
@@ -81,6 +101,8 @@ pub type ParseResult<T> = std::result::Result<T, ParseError>;
 #[derive(Clone, Eq, PartialEq, Debug)]
 pub enum ParseError {
     Expected { description: String, found: String }
+    // ExpectedIdentifier { found: String }
+    // ExpectedSymbol { symbol: String, found: String }
 }
 
 
@@ -183,21 +205,29 @@ fn parse_sum_or_other(text: Source) -> ParseResult<(Expression, Source)> {
             let (member_name, remaining) = parse_identifier(remaining)?;
             let remaining = skip_white(remaining);
 
-            let (member_kind, remaining) = {
-
-                if let Some(remaining) = skip_symbol(remaining, ":")
-                    .or(skip_symbol(remaining, "=")) // TODO remember pub type vs value
-                {
-                    let (member, remaining) = parse_product_or_other(remaining)?;
-                    (Some(member), remaining)
+            let (operator, remaining) = {
+                if let Some(remaining) = skip_symbol(remaining, ":") {
+                    (Some(':'), remaining)
+                }
+                else if let Some(remaining) = skip_symbol(remaining, "=") {
+                    (Some('='), remaining)
                 }
                 else {
                     (None, remaining)
                 }
             };
 
+
+            let (member, remaining) = parse_product_or_other(remaining)?;
+            members.push(Variant {
+                name: member_name,
+                content: operator.map(move |operator| VariantContent {
+                    expression: member,
+                    operator
+                })
+            });
+
             text = skip_white(remaining);
-            members.push((member_name, member_kind));
         }
 
         Ok((Expression::Sum(members), text))
@@ -215,27 +245,26 @@ fn parse_product_or_other(text: Source) -> ParseResult<(Expression, Source)> {
 
         let mut text = skip_white(&text);
         while let Some(remaining) = skip_symbol(text, "&") {
-            //if let Some(letter) = remaining.chars().next() {
-            //    if letter.is_lowercase() { // parse named member
             let (member_name, remaining) = parse_identifier(remaining)?;
             let remaining = skip_white(remaining);
 
-            let remaining = skip_symbol(remaining, ":")
-                .or(skip_symbol(remaining, "=")) // TODO remember pub type vs value
-                .ok_or_else(|| ParseError::Expected { description: "`:` or `=`".to_owned(), found: take_n(remaining, 80) })?;
+            let (operator, remaining) =
+                skip_symbol(remaining, ":").map(|txt| (':', txt))
+                    .or(skip_symbol(remaining, "=").map(|txt| ('=', txt)))
 
-            let (member_kind, remaining) = parse_function_application(remaining)?;
+                    .ok_or_else(|| ParseError::Expected {
+                        description: "`:` or `=`".to_owned(),
+                        found: take_n(remaining, 80)
+                    })?;
+
+            let (member, remaining) = parse_function_application(remaining)?;
 
             text = skip_white(remaining);
-            members.push((member_name, member_kind));
-            //    }
-            //    else { // parse base pub type
-
-            //    }
-//            }
-//            else {
-//                panic!("Expected composition member or base");
-//            }
+            members.push(ProductMember {
+                name: member_name,
+                expression: member,
+                operator
+            });
         }
 
         Ok((Expression::Product(members), text))
@@ -418,8 +447,17 @@ mod test {
                     binding: name!{ Name },
                     kind: None,
                     expression: Expression::Sum(vec![
-                        ("name".to_owned(), Some(name!{ std.string.String })),
-                        ("anonymous".to_owned(), None),
+                        Variant {
+                            name: "name".to_string(),
+                            content: Some(VariantContent {
+                                expression: name!{ std.string.String },
+                                operator: ':'
+                            })
+                        },
+                        Variant {
+                            name: "anonymous".to_string(),
+                            content: None
+                        },
                     ])
                 }
                 , ""
@@ -456,8 +494,17 @@ mod test {
         assert_eq!(
             parse_function_or_other("| name: std.String | anonymous"),
             Ok((Expression::Sum(vec![
-                ("name".to_owned(), Some(name!{ std.String })),
-                ("anonymous".to_owned(), None),
+                Variant {
+                    name: "name".to_string(),
+                    content: Some(VariantContent {
+                        expression: name!{ std.String },
+                        operator: ':'
+                    })
+                },
+                Variant {
+                    name: "anonymous".to_string(),
+                    content: None
+                }
             ] ), ""))
         );
 
@@ -485,8 +532,16 @@ mod test {
             Ok((Expression::Function(Function {
                 parameter: Box::new(Expression::Tuple(vec![name!{ a }, name! { b } ])),
                 result: Box::new(Expression::Product(vec![
-                    ("name".to_owned(), Expression::String("ab".to_owned())),
-                    ("age".to_owned(), Expression::Number("10".to_owned())),
+                    ProductMember {
+                        name: "name".to_owned(),
+                        expression: Expression::String("ab".to_owned()),
+                        operator: '='
+                    },
+                    ProductMember {
+                        name: "age".to_owned(),
+                        expression: Expression::Number("10".to_owned()),
+                        operator: '='
+                    },
                 ])),
             }), ""))
         );
@@ -494,14 +549,6 @@ mod test {
 
     #[test]
     fn test_parse_tuple_or_other_kind(){
-        assert_eq!(
-            parse_tuple_or_other("| name: std.String | anonymous"),
-            Ok((Expression::Sum(vec![
-                ("name".to_owned(), Some(name!{ std.String })),
-                ("anonymous".to_owned(), None),
-            ] ), ""))
-        );
-
         assert_eq!(
             parse_tuple_or_other(",Float ,str.String ,Int"),
             Ok((Expression::Tuple(vec![
@@ -524,8 +571,16 @@ mod test {
             parse_tuple_or_other(",&name:String&age:Int ,str.String ,Int"),
             Ok((Expression::Tuple(vec![
                 Expression::Product(vec![
-                    ("name".to_owned(), name!{ String }),
-                    ("age".to_owned(), name!{ Int }),
+                    ProductMember {
+                        name: "name".to_owned(),
+                        expression: name!{ String },
+                        operator: ':'
+                    },
+                    ProductMember {
+                        name: "age".to_owned(),
+                        expression: name!{ Int },
+                        operator: ':'
+                    },
                 ]),
                 name!{ str.String },
                 name!{ Int },
@@ -538,30 +593,50 @@ mod test {
     fn test_parse_sum_or_other_kind(){
         assert_eq!(parse_sum_or_other(" std .str .String ->"), Ok((name!{ std.str.String }, "->")));
 
-        assert_eq!(
-            parse_sum_or_other("& name: String &age : num.Int"),
-            Ok((Expression::Product(vec![
-                ("name".to_owned(), name!{ String }),
-                ("age".to_owned(), name!{ num.Int }),
-            ]), ""))
-        );
 
         assert_eq!(
             parse_sum_or_other("| name: std.String | anonymous"),
             Ok((Expression::Sum(vec![
-                ("name".to_owned(), Some(name!{ std.String })),
-                ("anonymous".to_owned(), None),
+                Variant {
+                    name: "name".to_string(),
+                    content: Some(VariantContent {
+                        expression: name!{ std.String },
+                        operator:':'
+                    })
+                },
+                Variant {
+                    name: "anonymous".to_string(),
+                    content: None
+                }
             ] ), ""))
         );
 
         assert_eq!(
             parse_sum_or_other("| name: &value: std.String &length: Int | anonymous"),
             Ok((Expression::Sum(vec![
-                ("name".to_owned(), Some(Expression::Product(vec![
-                    ("value".to_owned(), name!{ std.String }),
-                    ("length".to_owned(), name!{ Int }),
-                ]))),
-                ("anonymous".to_owned(), None),
+                Variant {
+                    name: "name".to_string(),
+                    content: Some(VariantContent {
+                        expression: Expression::Product(vec![
+                            ProductMember {
+                                name: "value".to_owned(),
+                                expression: name!{ std.String },
+                                operator: ':'
+                            },
+
+                            ProductMember {
+                                name: "length".to_owned(),
+                                expression: name!{ Int },
+                                operator: ':'
+                            },
+                        ]),
+                        operator:':'
+                    })
+                },
+                Variant {
+                    name: "anonymous".to_string(),
+                    content: None,
+                },
             ] ), ""))
         );
     }
@@ -575,16 +650,34 @@ mod test {
         assert_eq!(
             parse_sum_or_other("& name: String &age : num.Int"),
             Ok((Expression::Product(vec![
-                ("name".to_owned(), Expression::Identifier(vec!["String".to_owned()])),
-                ("age".to_owned(), Expression::Identifier(vec!["num".to_owned(), "Int".to_owned()])),
+                ProductMember {
+                    name: "name".to_owned(),
+                    expression: name!{ String },
+                    operator: ':'
+                },
+                ProductMember {
+                    name: "age".to_owned(),
+                    expression: name!{ num.Int },
+                    operator: ':'
+                },
             ]), ""))
         );
 
         assert_eq!(
             parse_sum_or_other(r#"& name = "world" &age = 12"#),
             Ok((Expression::Product(vec![
-                ("name".to_owned(), Expression::String("world".to_owned())),
-                ("age".to_owned(), Expression::Number("12".to_owned())),
+
+                ProductMember {
+                    name: "name".to_owned(),
+                    expression: Expression::String("world".to_owned()),
+                    operator: '='
+                },
+
+                ProductMember {
+                    name: "age".to_owned(),
+                    expression: Expression::Number("12".to_owned()),
+                    operator: '='
+                },
             ]), ""))
         );
     }
