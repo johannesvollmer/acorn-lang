@@ -135,7 +135,7 @@ fn parse_function_or_other(text: Source) -> ParseResult<(Expression, Source)> {
     let text = skip_white(text);
 
     if let Some(text) = skip_symbol(text, "->") {
-        let (output, text) = parse_expression(text)?;
+        let (output, text) = parse_tuple_or_other(text)?;
 
         let function = Function {
             parameter: Box::new(first_kind),
@@ -224,7 +224,7 @@ fn parse_product_or_other(text: Source) -> ParseResult<(Expression, Source)> {
                 .or(skip_symbol(remaining, "=")) // TODO remember pub type vs value
                 .ok_or_else(|| ParseError::Expected { description: "`:` or `=`".to_owned(), found: take_n(remaining, 80) })?;
 
-            let (member_kind, remaining) = parse_application(remaining)?;
+            let (member_kind, remaining) = parse_function_application(remaining)?;
 
             text = skip_white(remaining);
             members.push((member_name, member_kind));
@@ -241,16 +241,16 @@ fn parse_product_or_other(text: Source) -> ParseResult<(Expression, Source)> {
         Ok((Expression::Product(members), text))
     }
     else {
-        parse_application(text)
+        parse_function_application(text)
     }
 }
 
 // TODO: indention??
-fn parse_application(text: Source) -> ParseResult<(Expression, Source)> {
+fn parse_function_application(text: Source) -> ParseResult<(Expression, Source)> {
     let (first, remaining) = parse_atom(text)?;
     let remaining = skip_white(remaining);
 
-    if remaining.starts_with(|c:char| !"):=&|".contains(c)) {
+    if remaining.starts_with(|c:char| !"):=&|,.@\"'".contains(c)) {
         let (argument, remaining) = parse_atom(remaining)?;
         Ok((
             Expression::FunctionApplication(FunctionApplication {
@@ -425,11 +425,11 @@ mod test {
     #[test]
     fn test_parse_application(){
         assert_eq!(
-            parse_application("string.trim user_name"),
+            parse_function_application("string.trim user_name"),
             Ok((
                 Expression::FunctionApplication(FunctionApplication {
                     subject: Box::new(name!{ string.trim }),
-                    argument: Box::new(name! { username })
+                    argument: Box::new(name! { user_name })
                 })
                 , ""
             ))
