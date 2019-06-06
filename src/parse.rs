@@ -1,725 +1,629 @@
+use super::tokenize;
+use std::collections::HashMap;
+use crate::tokenize::{Definition, ProductMember, Variant};
 
-pub type Source<'a> = &'a str;
-
-// List, new, +, ...
-pub type Identifier = String;
-
-// std.List, List.new, pet.name, ...
-pub type Reference = Vec<String>;
-
-// any values, including case-expressions, not supported yet
+type FunctionId = usize;
 
 
-#[derive(Clone, Eq, PartialEq, Debug)]
-pub struct File {
-    pub definitions: Vec<Definition>
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Module {
+    pub definitions: Definitions,
+    pub children: HashMap<String, Module>,
 }
 
-// name: String, age = 5, name: String = "Peter"
-#[derive(Clone, Eq, PartialEq, Debug)]
-pub struct Definition {
-    pub binding: Expression, // :
-    pub kind: Option<Expression>, // =
-    pub expression: Expression
+pub type Definitions = HashMap<String, Expression>;
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct Scope<'d, 'p> {
+    pub current: &'d Definitions,
+    pub parent: Option<&'p Scope<'d, 'p>>,
 }
 
-
-#[derive(Clone, Eq, PartialEq, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Expression {
-    Function (Function),
+    Kind(Kind),
+    Value(Value)
+}
 
-    /// `a,b,c`, `A,B,C`, also used for destructuring assignments
-    Tuple (Vec<Expression>),
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum Kind {
+    Tuple (Vec<Kind>),
+    Product (HashMap<String, Kind>),
+    Sum (HashMap<String, Option<Kind>>),
+    Function (Box<FunctionKind>),
 
-    /// `| a | b: B | c`,  `|value = 5`, `|empty`, `|value: A |empty`
-    Sum (Vec<Variant>),
+    Reference(Vec<String>),
 
-    /// `& a = 5 & b = 6`, `a: A & b: C`, also used for destructuring assignments, ...
-    Product (Vec<ProductMember>),
+    F64,
+    String // TODO should not need a native type
+}
 
-    /// std.string.String, Int, window.width, ...
-    Identifier(Reference),
-
-    /// `get_name person`, `List Int`, `get_name $` ...
-    FunctionApplication (FunctionApplication),
-
-    /// multi-line function bodies, modules, ...
-    Scope (Scope),
-
-    String (String),
-    Number (String),
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FunctionKind {
+    parameter: Kind,
+    result: Kind,
 }
 
 
-#[derive(Clone, Eq, PartialEq, Debug)]
-pub struct Variant {
-    pub name: Identifier,
-    pub content: Option<VariantContent>,
-}
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum Value {
+    Function(Box<FunctionValueDefinition>),
+    FunctionCall(Box<FunctionValueCall>),
+    Tuple(Vec<Value>),
+    Variant((String, Option<Box<Value>>)),
+    Product(HashMap<String, Value>),
 
-#[derive(Clone, Eq, PartialEq, Debug)]
-pub struct VariantContent {
-    pub expression: Expression,
-    pub operator: char, // may be `=` or `:`
-}
+    WithLocalDefinitions(Definitions, Box<Value>),
 
+    Reference(Vec<String>),
 
-#[derive(Clone, Eq, PartialEq, Debug)]
-pub struct ProductMember {
-    pub name: Identifier,
-    pub expression: Expression,
-    pub operator: char, // may be `=` or `:`
-}
-
-/// `get_name person`, `Option.some 5`, `List Int`, ...
-#[derive(Clone, Eq, PartialEq, Debug)]
-pub struct FunctionApplication {
-    pub subject: Box<Expression>,
-    pub argument: Box<Expression>
-}
-
-/// includes function pub type declarations but also lambda expressions
-#[derive(Clone, Eq, PartialEq, Debug)]
-pub struct Function {
-    pub parameter: Box<Expression>, // for a lambda, this is a depub structuring or reference
-    pub result: Box<Expression>
-}
-
-#[derive(Clone, Eq, PartialEq, Debug)]
-pub struct Scope {
-    pub definitions: Vec<Definition>,
-    pub result: Box<Expression>
+    String(String),
+    F64(NonNanF64),
 }
 
 
-
-
-
-
-pub type ParseResult<T> = std::result::Result<T, ParseError>;
-
-#[derive(Clone, Eq, PartialEq, Debug)]
-pub enum ParseError {
-    Expected { description: String, found: String }
-    // ExpectedIdentifier { found: String }
-    // ExpectedSymbol { symbol: String, found: String }
-}
-
-
-fn parse_module(text: Source) -> ParseResult<File> {
-    let mut definitions = Vec::new();
-
-    let mut text = skip_white(text);
-    while !text.is_empty() {
-        let (definition, remaining) = parse_definition(text)?;
-
-        definitions.push(definition);
-        text = skip_white(remaining);
-    }
-
-    Ok(File { definitions })
-}
-
-
-/// identifier : pub type = value
-fn parse_definition(text: Source) -> ParseResult<(Definition, Source)> {
-    let (binding, text) = parse_expression(text)?;
-    let text = skip_white(text);
-
-    let (type_annotation, text) = {
-        if let Some(text) = skip_symbol(text, ":"){
-            let (kind, text) = parse_expression(text)?;
-            (Some(kind), text)
-        }
-        else {
-            (None, text)
-        }
-    };
-
-    let text = skip_white(text);
-    let text = expect_symbol(text, "=")?;
-
-    let (expression, text) = parse_expression(text)?;
-
-    Ok((
-        Definition { binding, kind: type_annotation, expression },
-        text
-    ))
-}
-
-
-pub fn parse_expression(text: Source) -> ParseResult<(Expression, Source)> {
-    parse_function_or_other(text)
-}
-
-fn parse_function_or_other(text: Source) -> ParseResult<(Expression, Source)> {
-    let (first_kind, text) = parse_tuple_or_other(text)?;
-    let text = skip_white(text);
-
-    if let Some(text) = skip_symbol(text, "->") {
-        let (output, text) = parse_tuple_or_other(text)?;
-
-        let function = Function {
-            parameter: Box::new(first_kind),
-            result: Box::new(output)
-        };
-
-        Ok((Expression::Function(function), text))
-    }
-    else {
-        Ok((first_kind, text))
-    }
-}
-
-fn parse_tuple_or_other(text: Source) -> ParseResult<(Expression, Source)> {
-    let text = skip_white(text);
-    let text = skip_symbol(text, ",").unwrap_or(text); // TODO respect this info?
-
-    let (first, text) = parse_sum_or_other(text)?;
-
-    let mut text = skip_white(text);
-    if text.starts_with(","){
-        let mut members = vec![ first ];
-
-        while let Some(remaining) = skip_symbol(text, ",") {
-            let (kind, remaining_text) = parse_sum_or_other(remaining)?;
-            text = skip_white(remaining_text);
-            members.push(kind);
+#[derive(Clone, Debug, PartialOrd, Copy, Default)]
+pub struct NonNanF64(f64);
+impl Ord for NonNanF64 {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        if self.0.is_nan() || other.0.is_nan() {
+            panic!("NaN encountered!");
         }
 
-        Ok((Expression::Tuple(members), text))
+        self.0.partial_cmp(&other.0)
+            .expect("Cannot compare these floats")
     }
-    else {
-        Ok((first, text))
+}
+impl Eq for NonNanF64 {}
+impl PartialEq for NonNanF64 {
+    fn eq(&self, other: &Self) -> bool {
+        if self.0.is_nan() || other.0.is_nan() {
+            panic!("NaN encountered!");
+        }
+
+        self.0.eq(&other.0)
     }
 }
 
-fn parse_sum_or_other(text: Source) -> ParseResult<(Expression, Source)> {
-    let text = skip_white(text);
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FunctionValueCall {
+    function: FunctionValueDefinition,
+    argument: Value,
+}
 
-    if text.starts_with("|") {
-        let mut text = skip_white(&text);
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FunctionValueDefinition {
+    pub parameter_kind: Kind,
+    pub function: Value
+}
 
-        let mut members = Vec::new();
-        while let Some(remaining) = skip_symbol(text, "|") {
-            let (member_name, remaining) = parse_identifier(remaining)?;
-            let remaining = skip_white(remaining);
 
-            let (operator, remaining) = {
-                if let Some(remaining) = skip_symbol(remaining, ":") {
-                    (Some(':'), remaining)
+pub type CompileResult<T> = std::result::Result<T, CompileError>;
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum CompileError {
+    NotFound(Vec<String>),
+    InvalidNumber(String),
+    InvalidBindingSyntax(tokenize::Expression),
+    NestedBindingSyntaxForbidden(tokenize::Reference),
+    InvalidTypeAnnotation(tokenize::Expression),
+    TypeMismatch { annotated: Kind, found: Kind },
+    ExpectedKindButFoundValue(Value),
+    ExpectedValueButFoundKind(Kind),
+    ExpectedVariantButFoundKind(tokenize::Expression)
+}
+
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum ExpressionKind {
+    Value, Kind, Unknown
+}
+
+
+impl Value {
+    /// return err on reference not found
+    pub fn kind(&self, scope: Scope, main: &Module) -> CompileResult<Kind> {
+        match self {
+            Value::F64(_) => Ok(Kind::F64),
+            Value::String(_) => Ok(Kind::String),
+
+            Value::Reference(reference) => {
+                let expression = match reference.as_slice() {
+                    [plain] => scope.resolve_local(plain),
+                    other => main.resolve(other),
+                };
+
+                expression
+                    .map(|expression| expression.as_value()).transpose()?
+                    .map(|value| value.kind(scope, main)).transpose()?
+                    .ok_or(CompileError::NotFound(reference.clone()))
+            },
+
+            Value::Tuple(members) => {
+                let members : CompileResult<Vec<Kind>> = members.iter()
+                    .map(|member| member.kind(scope, main))
+                    .collect();
+
+                Ok(Kind::Tuple(members?))
+            },
+
+            Value::Variant((variant, value)) =>
+                Ok(Kind::Sum(vec![(
+                    variant.clone(),
+                    value.as_ref()
+                        .map(|member| member.kind(scope, main))
+                        .transpose()?
+
+                )].into_iter().collect())),
+
+            Value::Product(members) => {
+                let members : CompileResult<HashMap<String, Kind>> = collapse_named_results(
+                    members.clone().into_iter()
+                        .map(|(name, value)| (name, value.kind(scope, main)))
+                );
+
+                Ok(Kind::Product(members?))
+            },
+
+            Value::WithLocalDefinitions(local_scope, expression) => {
+                expression.kind(scope.enter_sub_scope(local_scope), main)
+            },
+
+            Value::Function(function) => {
+                Ok(Kind::Function(Box::new(FunctionKind {
+                    parameter: function.parameter_kind.clone(),
+                    result: function.function.kind(scope, main)?
+                })))
+            },
+
+            Value::FunctionCall(call) => {
+                call.function.function.kind(scope, main)
+            },
+        }
+    }
+}
+
+
+pub fn compile_file(file: tokenize::File, main: &Module) -> CompileResult<Definitions>
+{
+    let mut definitions = Definitions::new();
+
+    for definition in file.definitions {
+        let scope = Scope { current: &definitions, parent: None };
+        let (identifier, expression) = compile_definition(definition, scope, main)?;
+        definitions.insert(identifier, expression);
+    }
+
+    Ok(definitions)
+}
+
+
+pub fn compile_definition(definition: tokenize::Definition, scope: Scope, main: &Module)
+                          -> CompileResult<(String, Expression)>
+{
+    let Definition { binding, kind, expression } = definition;
+    use tokenize::Expression::*;
+
+    match binding {
+        Identifier(mut identifier) => {
+            if identifier.len() == 1 {
+                let identifier = identifier.remove(0);
+
+                match compile_expression(expression, scope, main)? {
+                    Expression::Value(compiled_value) => {
+                        if identifier.starts_with(|c:char| c.is_uppercase()) {
+                            return Err(CompileError::ExpectedKindButFoundValue(compiled_value))
+                        }
+
+                        let expression_kind = compiled_value.kind(scope, main)?;
+                        let desired_kind = kind
+                            .map(|k| compile_kind(k, scope, main))
+                            .transpose()?;
+
+                        if let Some(desired_kind) = desired_kind {
+                            if expression_kind != desired_kind {
+                                return Err(CompileError::TypeMismatch {
+                                    annotated: desired_kind, found: expression_kind
+                                })
+                            }
+                        }
+
+                        Ok((identifier, Expression::Value(compiled_value)))
+                    },
+
+                    Expression::Kind(compiled_kind) => {
+                        if identifier.starts_with(|c:char| c.is_lowercase()) {
+                            return Err(CompileError::ExpectedValueButFoundKind(compiled_kind))
+                        }
+
+                        Ok((identifier, Expression::Kind(compiled_kind)))
+                    }
                 }
-                else if let Some(remaining) = skip_symbol(remaining, "=") {
-                    (Some('='), remaining)
-                }
-                else {
-                    (None, remaining)
-                }
-            };
 
-
-            let (member, remaining) = parse_product_or_other(remaining)?;
-            members.push(Variant {
-                name: member_name,
-                content: operator.map(move |operator| VariantContent {
-                    expression: member,
-                    operator
-                })
-            });
-
-            text = skip_white(remaining);
-        }
-
-        Ok((Expression::Sum(members), text))
-    }
-    else {
-        parse_product_or_other(text)
-    }
-}
-
-fn parse_product_or_other(text: Source) -> ParseResult<(Expression, Source)> {
-    let text = skip_white(text);
-
-    if text.starts_with("&") {
-        let mut members = Vec::new();
-
-        let mut text = skip_white(&text);
-        while let Some(remaining) = skip_symbol(text, "&") {
-            let (member_name, remaining) = parse_identifier(remaining)?;
-            let remaining = skip_white(remaining);
-
-            let (operator, remaining) =
-                skip_symbol(remaining, ":").map(|txt| (':', txt))
-                    .or(skip_symbol(remaining, "=").map(|txt| ('=', txt)))
-
-                    .ok_or_else(|| ParseError::Expected {
-                        description: "`:` or `=`".to_owned(),
-                        found: take_n(remaining, 80)
-                    })?;
-
-            let (member, remaining) = parse_function_application(remaining)?;
-
-            text = skip_white(remaining);
-            members.push(ProductMember {
-                name: member_name,
-                expression: member,
-                operator
-            });
-        }
-
-        Ok((Expression::Product(members), text))
-    }
-    else {
-        parse_function_application(text)
-    }
-}
-
-// TODO: indention??
-fn parse_function_application(text: Source) -> ParseResult<(Expression, Source)> {
-    let (first, remaining) = parse_atom(text)?;
-    let remaining = skip_white(remaining);
-
-    if remaining.starts_with(|c:char| c == '(' || !is_special_symbol(c)) {
-        let (argument, remaining) = parse_atom(remaining)?;
-        Ok((
-            Expression::FunctionApplication(FunctionApplication {
-                subject: Box::new(first), argument: Box::new(argument)
-            }),
-            remaining
-        ))
-    }
-    else {
-        Ok((first, remaining))
-    }
-}
-
-fn parse_atom(text: Source) -> ParseResult<(Expression, Source)> {
-    let text = skip_white(text);
-
-    if let Some((number, remaining)) = parse_number(text) {
-        Ok((Expression::Number(number.to_owned()), remaining))
-    }
-    else if let Some(remaining) = skip_symbol(text, "(") {
-        let (contents, remaining) = parse_expression(remaining)?;
-
-        let remaining = skip_white(remaining);
-        let remaining = skip_symbol(remaining, ")")
-            .ok_or(ParseError::Expected { description: ")".to_owned(), found: take_n(remaining, 80) })?;
-
-        Ok((contents, remaining))
-    }
-    else if let Some(remaining) = skip_symbol(text, "\"") {
-        if let Some(end_index) = remaining.find(|c| c == '"') {
-            let (string, remaining) = remaining.split_at(end_index);
-            let remaining = expect_symbol(remaining, "\"")?;
-            Ok((Expression::String(string.to_owned()), remaining))
-        }
-        else {
-            Err(ParseError::Expected { description: "Closing `\"".to_owned(), found: "".to_owned() })
-        }
-    }
-    else {
-        parse_identifier_chain(text)
-    }
-}
-
-
-fn is_special_symbol(symbol: char) -> bool {
-    symbol.is_whitespace() || "$&|@,():=.\"'<->".contains(symbol)
-}
-
-fn parse_number(text: Source) -> Option<(Source, Source)> {
-    let end_index = skip_white(text)
-        .find(|c:char| !c.is_digit(10) && c != '.');
-
-    if let Some(index) = end_index {
-        if index != 0 {
-            let (content, remaining) = text.split_at(index);
-            let successor = remaining.chars().next().unwrap();
-
-            // do not parse number if is immediately continued with an identifier
-            if is_special_symbol(successor) {
-                Some((content, remaining))
             }
-            else { None }
+            else {
+                return Err(CompileError::NestedBindingSyntaxForbidden(identifier))
+            }
         }
-        else { None }
-    }
-    else {
-        Some((text, ""))
-    }
-}
 
-fn parse_identifier_chain(text: Source) -> ParseResult<(Expression, Source)> {
-    let (first, text) = parse_identifier(skip_white(text))?;
-    let mut parts = vec![ first ];
-
-    let mut text = skip_white(text);
-    while let Some(remaining) = skip_symbol(text, ".") {
-        let (identifier, remaining) = parse_identifier(remaining)?;
-        text = skip_white(remaining);
-
-        parts.push(identifier);
-    }
-
-    if parts.is_empty() {
-        Err(ParseError::Expected { description: "Identifier".to_owned(), found: take_n(text, 80) })
-    }
-    else {
-        Ok((Expression::Identifier(parts), text))
+        FunctionApplication(_) => panic!("Type parameters not supported yet"),
+        Tuple(_) | Product(_) | Sum(_) => panic!("destructuring not supported yet"),
+        invalid => return Err(CompileError::InvalidBindingSyntax(invalid))
     }
 }
 
 
-// name, prop1 & prop2,
-fn parse_identifier(text: Source) -> ParseResult<(Identifier, Source)> {
-    let text = skip_white(text);
+pub fn compile_expression(expression: tokenize::Expression, scope: Scope, main: &Module) -> CompileResult<Expression> {
+    if expression_kind(&expression) == ExpressionKind::Value {
+        compile_value(expression, scope, main)
+            .map(|value| Expression::Value(value))
+    }
+    else {
+        compile_kind(expression, scope, main)
+            .map(|kind| Expression::Kind(kind))
+    }
+}
 
-    let is_not_identifier = |c: char|
-        c.is_whitespace() || ("&|@,():=.\"'").contains(c);
 
-    if let Some(identifier_end) = text.find(is_not_identifier){
-        if identifier_end == 0 {
-            (Err(ParseError::Expected { description: "Identifier".to_owned(), found: take_n(text, 80) }))
+pub fn compile_kind(expression: tokenize::Expression, scope: Scope, main: &Module) -> CompileResult<Kind> {
+    use tokenize::Expression::*;
+
+    match expression {
+        Tuple(members) => compile_tuple_kind(members, scope, main),
+        Product(members) => compile_product_kind(members, scope, main),
+        Sum(members) => compile_sum_kind(members, scope, main),
+        // Function(function) => compile_function_kind(function, scope, main),
+
+        Identifier(reference) =>
+            Ok(Kind::Reference(reference)),
+
+        invalid => Err(CompileError::InvalidTypeAnnotation(invalid))
+    }
+}
+
+
+pub fn compile_tuple_kind(
+    members: Vec<tokenize::Expression>, scope: Scope, main: &Module
+) -> CompileResult<Kind>
+{
+    let members: Result<Vec<Kind>, CompileError> = members.into_iter()
+        .map(|member| compile_kind(member, scope, main))
+        .collect();
+
+    Ok(Kind::Tuple(members?))
+}
+
+pub fn compile_product_kind(
+    members: Vec<ProductMember>, scope: Scope, main: &Module
+) -> CompileResult<Kind>
+{
+    let members: Result<HashMap<String, Kind>, CompileError> = collapse_named_results(
+    members.into_iter()
+        .map(|member| (member.name, compile_kind(member.expression, scope, main)))
+    );
+
+    Ok(Kind::Product(members?))
+}
+
+pub fn compile_sum_kind(
+    members: Vec<Variant>, scope: Scope, main: &Module
+) -> CompileResult<Kind>
+{
+    let members: Result<HashMap<String, Option<Kind>>, CompileError> = collapse_named_results(
+        members.into_iter()
+        .map(|member| (
+            member.name, member.content.map(|content| compile_kind(content.expression, scope, main)).transpose()
+        ))
+    );
+
+    Ok(Kind::Sum(members?))
+}
+
+
+pub fn compile_value(
+    expression: tokenize::Expression, scope: Scope, main: &Module
+) -> CompileResult<Value>
+{
+    use tokenize::Expression::*;
+
+    Ok(match expression {
+        String(value) => Value::String(value),
+        Number(value) => Value::F64(NonNanF64(parse_f64(value)?)),
+
+        Identifier(reference) => {
+            let identifier = reference.iter().map(ToOwned::to_owned).collect();
+            if reference.last().expect("Empty Reference").starts_with(char::is_uppercase) {
+                return Err(CompileError::ExpectedValueButFoundKind(Kind::Reference(identifier)))
+            }
+            else {
+                Value::Reference(identifier)
+            }
+        },
+
+        Tuple(members) => compile_tuple_value(members, scope, main)?,
+        Product(members) => compile_product_value(members, scope, main)?,
+
+        Sum(mut members) => {
+            if members.len() != 1 {
+                return Err(CompileError::ExpectedVariantButFoundKind(Sum(members)))
+            }
+
+            let member = members.remove(0);
+
+            Value::Variant((
+               member.name,
+               member.content.map(|content| compile_value(content.expression, scope, main))
+                   .transpose()?.map(Box::new)
+            ))
+        }
+
+        // FunctionApplication(call) => compile_function_call(call, scope, main),
+
+        _ => panic!()
+    })
+}
+
+
+pub fn compile_tuple_value(
+    members: Vec<tokenize::Expression>, scope: Scope, main: &Module
+) -> CompileResult<Value>
+{
+    let members: Result<Vec<Value>, CompileError> = members
+        .into_iter().map(|member| compile_value(member, scope, main))
+        .collect();
+
+    Ok(Value::Tuple(members?))
+}
+
+pub fn compile_product_value(
+    members: Vec<ProductMember>, scope: Scope, main: &Module
+) -> CompileResult<Value>
+{
+    let members: Result<HashMap<String, Value>, CompileError> = collapse_named_results(
+        members
+        .into_iter().map(|member| (member.name, compile_value(member.expression, scope, main)))
+    );
+
+    Ok(Value::Product(members?))
+}
+
+//pub fn compile_function_kind()
+
+
+pub fn compile_function_call(
+    expression: tokenize::FunctionApplication, scope: Scope, main: &Module
+) -> CompileResult<Value>
+{
+    panic!()
+    // Ok(Value::FunctionCall(FunctionValueCall { function, argument }))
+}
+
+pub fn parse_f64(text: String) -> CompileResult<f64> {
+    text.parse::<f64>().map_err(|_| CompileError::InvalidNumber(text))
+}
+
+
+
+impl<'d, 'p> Scope<'d, 'p> {
+    pub fn enter_sub_scope(&'p self, definitions: &'d Definitions) -> Self {
+        Scope {
+            current: definitions,
+            parent: Some(&self)
+        }
+    }
+
+    pub fn resolve_local(&self, identifier: &String) -> Option<&Expression> {
+        self.current.get(identifier)
+            .or_else(|| self.parent.and_then(|parent| parent.resolve_local(identifier)))
+    }
+}
+
+
+impl Module {
+    pub fn resolve(&self, reference: &[String]) -> Option<&Expression> {
+        reference.split_first().and_then(|(identifier, rest)| {
+            if rest.is_empty() {
+                self.definitions.get(identifier)
+            }
+            else {
+                self.children.get(identifier)
+                    .and_then(|module| module.resolve(rest))
+            }
+        })
+    }
+}
+
+
+impl Expression {
+    pub fn as_kind(&self) -> CompileResult<&Kind> {
+        match self {
+            Expression::Kind(kind) => Ok(kind),
+            Expression::Value(value) => Err(CompileError::ExpectedKindButFoundValue(value.clone()))
+        }
+    }
+
+    pub fn as_value(&self) -> CompileResult<&Value> {
+        match self {
+            Expression::Value(value) => Ok(value),
+            Expression::Kind(kind) => Err(CompileError::ExpectedValueButFoundKind(kind.clone()))
+        }
+    }
+}
+
+
+
+
+/// otherwise, is kind
+pub fn expression_kind(expression: &tokenize::Expression) -> ExpressionKind {
+    use tokenize::Expression::*;
+    match expression {
+        String(_) | Number(_) | FunctionApplication(_) => ExpressionKind::Value,
+        Identifier(names) => reference_expression_kind(names),
+        Tuple(members) => expression_kind(&members[0]), // TODO err on any member mismatch
+        Sum(variants) => sum_expression_kind(&variants),
+        Product(members) => expression_kind(&members[0].expression),
+        Function(function) => expression_kind(function.parameter.as_ref()),
+        Scope(scope) => expression_kind(scope.result.as_ref()),
+    }
+}
+
+fn sum_expression_kind(variants: &[tokenize::Variant]) -> ExpressionKind {
+
+    if let Some(content) = variants[0].content.as_ref() {
+        if content.operator == '=' {
+            if variants.len() > 1 || expression_kind(&content.expression) == ExpressionKind::Kind {
+                panic!("sum type content expression kind mismatch")
+            }
+
+            ExpressionKind::Value
         }
         else {
-            let (result, remaining) = text.split_at(identifier_end);
-            Ok((result.to_owned(), remaining))
+            ExpressionKind::Kind
         }
     }
-    else { // no non-identifier found
-        if text.is_empty() {
-            Err(ParseError::Expected { description: "Identifier".to_owned(), found: "".to_owned() })
-        }
-        else {
-            Ok((text.to_owned(), ""))
-        }
-    }
-}
 
-fn expect_symbol<'t>(text: Source<'t>, symbol: &'t str) -> ParseResult<Source<'t>> {
-    skip_symbol(text, symbol)
-        .ok_or_else(|| ParseError::Expected { description: symbol.to_owned(), found: take_n(text, 80) })
-}
-
-fn skip_symbol<'a>(text: Source<'a>, symbol: &str) -> Option<Source<'a>> {
-    if text.starts_with(symbol) {
-        Some(&text[symbol.len()..])
-    }
     else {
-        None
+        ExpressionKind::Unknown
     }
 }
 
-fn skip_white(text: Source) -> Source {
-    text.trim_start()
+fn reference_expression_kind(reference: &tokenize::Reference) -> ExpressionKind {
+    let last_identifier = reference.last().expect("Empty Reference Chain");
+    if last_identifier.starts_with(char::is_uppercase) { ExpressionKind::Kind }
+    else { ExpressionKind::Value }
 }
 
 
-fn take_n(text: &str, count: usize) -> String {
-    text[0..text.len().min(count)].to_owned() + "..."
+pub fn collapse_results<T, I>(results: I) -> CompileResult<Vec<T>>
+    where I: Iterator<Item=CompileResult<T>>
+{
+    results.fold(
+        Ok(Vec::new()),
+        |mut vec, element| {
+            vec.and_then(|mut vec|{
+                match element {
+                    Ok(element) => {
+                        vec.push(element);
+                        Ok(vec)
+                    },
+
+                    Err(error) => Err(error),
+                }
+            })
+        }
+    )
 }
 
+pub fn collapse_named_results<T, I>(results: I) -> CompileResult<HashMap<String, T>>
+    where I: Iterator<Item=(String, CompileResult<T>)>
+{
+    results.fold(
+        Ok(HashMap::new()),
+        |mut vec, element| {
+            vec.and_then(|mut vec|{
+                match element {
+                    (name, Ok(value)) => {
+                        vec.insert(name, value);
+                        Ok(vec)
+                    },
 
+                    (_name, Err(error)) => Err(error),
+                }
+            })
+        }
+    )
+}
 
-
-// TODO negative tests
 
 #[cfg(test)]
 mod test {
     use super::*;
 
-    macro_rules! name {
+    fn tokenize_expression(text: &str) -> tokenize::Expression {
+        tokenize::parse_expression(text).unwrap().0
+    }
+
+
+    macro_rules! reference_value {
         ($($identifier:ident).*) => {
-            Expression::Identifier(vec![
+            Value::Reference(vec![
                 $(stringify!($identifier) .to_owned() ,)*
             ])
         };
     }
 
+    fn string(value: &str) -> Value {
+        Value::String(value.to_owned())
+    }
 
-    #[test]
-    fn test_parse_definition(){
-        assert_eq!(
-            parse_definition("Name = | name: std.string.String | anonymous"),
-            Ok((
-                Definition {
-                    binding: name!{ Name },
-                    kind: None,
-                    expression: Expression::Sum(vec![
-                        Variant {
-                            name: "name".to_string(),
-                            content: Some(VariantContent {
-                                expression: name!{ std.string.String },
-                                operator: ':'
-                            })
-                        },
-                        Variant {
-                            name: "anonymous".to_string(),
-                            content: None
-                        },
-                    ])
-                }
-                , ""
-            ))
-        );
+    fn scope(definitions: &Definitions) -> Scope {
+        Scope {
+            current: definitions,
+            parent: None
+        }
     }
 
     #[test]
-    fn test_parse_application(){
+    fn test_compile(){
+        let scope_content = Definitions::new();
+        let scope = scope(&scope_content);
+
+        let main = Module {
+            definitions: Definitions::new(),
+            children: HashMap::new()
+        };
+
         assert_eq!(
-            parse_function_application("string.trim user_name"),
-            Ok((
-                Expression::FunctionApplication(FunctionApplication {
-                    subject: Box::new(name!{ string.trim }),
-                    argument: Box::new(name! { user_name })
-                })
-                , ""
-            ))
-        );
-    }
+            compile_value(
+                tokenize_expression("debug.crash \"Fatal Error\""),
+                scope, &main
+            ),
 
-    #[test]
-    fn test_parse_atom(){
-        assert_eq!(parse_atom(" Name"), Ok((name!{ Name }, "")));
-        assert_eq!(parse_atom(" a.Name n"), Ok((name!{ a.Name }, "n")));
-        assert_eq!(parse_atom(" a3.1Name 0n"), Ok((Expression::Identifier(vec!["a3".to_owned(), "1Name".to_owned()]), "0n")));
-        assert_eq!(parse_atom(" 3.1 0n"), Ok((Expression::Number("3.1".to_owned()), " 0n")));
-        assert_eq!(parse_atom(" \"legendary\"xo"), Ok((Expression::String("legendary".to_owned()), "xo")));
-    }
-
-
-    #[test]
-    fn test_parse_function_or_other_kind(){
-        assert_eq!(
-            parse_function_or_other("| name: std.String | anonymous"),
-            Ok((Expression::Sum(vec![
-                Variant {
-                    name: "name".to_string(),
-                    content: Some(VariantContent {
-                        expression: name!{ std.String },
-                        operator: ':'
-                    })
+            Ok(Value::FunctionCall(Box::new(FunctionValueCall {
+                function: FunctionValueDefinition {
+                    parameter_kind: Kind::String,
+                    function: reference_value!(debug.crash)
                 },
-                Variant {
-                    name: "anonymous".to_string(),
-                    content: None
-                }
-            ] ), ""))
-        );
-
-        assert_eq!(
-            parse_function_or_other("String -> Int"),
-            Ok((Expression::Function(Function {
-                parameter: Box::new(name!{ String }),
-                result: Box::new(name!{ Int }),
-            }), ""))
-        );
-
-        assert_eq!(
-            parse_function_or_other("String -> ,Int,String"),
-            Ok((Expression::Function(Function {
-                parameter: Box::new(name!{ String }),
-                result: Box::new(Expression::Tuple(vec![
-                    name!{ Int },
-                    name!{ String }
-                ])),
-            }), ""))
-        );
-
-        assert_eq!(
-            parse_function_or_other("a,b -> &name = \"ab\" & age = 10 "),
-            Ok((Expression::Function(Function {
-                parameter: Box::new(Expression::Tuple(vec![name!{ a }, name! { b } ])),
-                result: Box::new(Expression::Product(vec![
-                    ProductMember {
-                        name: "name".to_owned(),
-                        expression: Expression::String("ab".to_owned()),
-                        operator: '='
-                    },
-                    ProductMember {
-                        name: "age".to_owned(),
-                        expression: Expression::Number("10".to_owned()),
-                        operator: '='
-                    },
-                ])),
-            }), ""))
-        );
+                argument: string("Fatal Error")
+            })))
+        )
     }
 
     #[test]
-    fn test_parse_tuple_or_other_kind(){
-        assert_eq!(
-            parse_tuple_or_other(",Float ,str.String ,Int"),
-            Ok((Expression::Tuple(vec![
-                name!{ Float },
-                name!{ str.String },
-                name!{ Int },
-            ]), ""))
-        );
+    fn test_expression_kind(){
+        use tokenize::Expression::*;
 
-        assert_eq!(
-            parse_tuple_or_other(r#" , 5 , "hello" , Int"#),
-            Ok((Expression::Tuple(vec![
-                Expression::Number("5".to_owned()),
-                Expression::String("hello".to_owned()),
-                name!{ Int },
-            ]), ""))
-        );
-
-        assert_eq!(
-            parse_tuple_or_other(",&name:String&age:Int ,str.String ,Int"),
-            Ok((Expression::Tuple(vec![
-                Expression::Product(vec![
-                    ProductMember {
-                        name: "name".to_owned(),
-                        expression: name!{ String },
-                        operator: ':'
-                    },
-                    ProductMember {
-                        name: "age".to_owned(),
-                        expression: name!{ Int },
-                        operator: ':'
-                    },
-                ]),
-                name!{ str.String },
-                name!{ Int },
-            ]), ""))
-        );
+        assert_eq!(expression_kind(&String("hello".to_owned())), ExpressionKind::Value);
+        assert_eq!(expression_kind(&Identifier(vec!["std".to_owned(), "string".to_owned()])), ExpressionKind::Value);
+        assert_eq!(expression_kind(&Identifier(vec!["std".to_owned(), "string".to_owned(), "String".to_owned()])), ExpressionKind::Kind);
+        assert_eq!(expression_kind(&tokenize_expression("&a:A &b:B")), ExpressionKind::Kind);
+        assert_eq!(expression_kind(&tokenize_expression("|a:A |b:B")), ExpressionKind::Kind);
+        assert_eq!(expression_kind(&tokenize_expression("|d=4")), ExpressionKind::Value);
+        assert_eq!(expression_kind(&tokenize_expression("|d:4")), ExpressionKind::Kind);
+        assert_eq!(expression_kind(&tokenize_expression("&n:4 &t:T")), ExpressionKind::Value);
     }
-
-
-    #[test]
-    fn test_parse_sum_or_other_kind(){
-        assert_eq!(parse_sum_or_other(" std .str .String ->"), Ok((name!{ std.str.String }, "->")));
-
-
-        assert_eq!(
-            parse_sum_or_other("| name: std.String | anonymous"),
-            Ok((Expression::Sum(vec![
-                Variant {
-                    name: "name".to_string(),
-                    content: Some(VariantContent {
-                        expression: name!{ std.String },
-                        operator:':'
-                    })
-                },
-                Variant {
-                    name: "anonymous".to_string(),
-                    content: None
-                }
-            ] ), ""))
-        );
-
-        assert_eq!(
-            parse_sum_or_other("| name: &value: std.String &length: Int | anonymous"),
-            Ok((Expression::Sum(vec![
-                Variant {
-                    name: "name".to_string(),
-                    content: Some(VariantContent {
-                        expression: Expression::Product(vec![
-                            ProductMember {
-                                name: "value".to_owned(),
-                                expression: name!{ std.String },
-                                operator: ':'
-                            },
-
-                            ProductMember {
-                                name: "length".to_owned(),
-                                expression: name!{ Int },
-                                operator: ':'
-                            },
-                        ]),
-                        operator:':'
-                    })
-                },
-                Variant {
-                    name: "anonymous".to_string(),
-                    content: None,
-                },
-            ] ), ""))
-        );
-    }
-
-    #[test]
-    fn test_parse_product_or_other_kind(){
-        assert_eq!(parse_product_or_other(" String"), Ok((name!{ String }, "")));
-        assert_eq!(parse_product_or_other(" std.String"), Ok((name!{ std.String }, "")));
-        assert_eq!(parse_product_or_other(" std .str .String"), Ok((name!{ std.str.String }, "")));
-
-        assert_eq!(
-            parse_sum_or_other("& name: String &age : num.Int"),
-            Ok((Expression::Product(vec![
-                ProductMember {
-                    name: "name".to_owned(),
-                    expression: name!{ String },
-                    operator: ':'
-                },
-                ProductMember {
-                    name: "age".to_owned(),
-                    expression: name!{ num.Int },
-                    operator: ':'
-                },
-            ]), ""))
-        );
-
-        assert_eq!(
-            parse_sum_or_other(r#"& name = "world" &age = 12"#),
-            Ok((Expression::Product(vec![
-
-                ProductMember {
-                    name: "name".to_owned(),
-                    expression: Expression::String("world".to_owned()),
-                    operator: '='
-                },
-
-                ProductMember {
-                    name: "age".to_owned(),
-                    expression: Expression::Number("12".to_owned()),
-                    operator: '='
-                },
-            ]), ""))
-        );
-    }
-
-    #[test]
-    fn test_parse_chained_identifier(){
-        assert_eq!(parse_identifier_chain("hello world"), Ok((name!{ hello }, "world")));
-        assert_eq!(parse_identifier_chain("hello.world"), Ok((name!{ hello.world }, "")));
-        assert_eq!(parse_identifier_chain(" the .world "), Ok((name!{ the.world }, "")));
-        assert_eq!(parse_identifier_chain("hello .world but not this"), Ok((name!{ hello.world }, "but not this")));
-        assert_eq!(parse_identifier_chain("hello .world@"), Ok((name!{ hello.world }, "@")));
-    }
-
-    #[test]
-    fn test_parse_identifier(){
-        assert_eq!(parse_identifier("hello world"), Ok(("hello".to_owned(), " world")));
-        assert_eq!(parse_identifier("hello.world"), Ok(("hello".to_owned(), ".world")));
-        assert_eq!(parse_identifier(" the .world "), Ok(("the".to_owned(), " .world ")));
-        assert_eq!(parse_identifier(" world+"), Ok(("world+".to_owned(), "")));
-        assert_eq!(parse_identifier(" world@"), Ok(("world".to_owned(), "@")));
-        // assert_panics!(parse_identifier("("), (("", "(")));
-        // assert_panics!(parse_identifier(""), (("", "")));
-    }
-
-    #[test]
-    fn test_skip_symbol(){
-        assert_eq!(skip_symbol("x", ""), Some("x"));
-        assert_eq!(skip_symbol(".-01w", ".-"), Some("01w"));
-        assert_eq!(skip_symbol("t", "t"), Some(""));
-        assert_eq!(skip_symbol("__", "x"), None);
-        assert_eq!(skip_symbol(" __", "_"), None);
-        assert_eq!(skip_symbol("__", "_"), Some("_"));
-    }
-
-    #[test]
-    fn test_skip_white(){
-        assert_eq!(skip_white(" x"), "x");
-        assert_eq!(skip_white(" .-01w"), ".-01w");
-        assert_eq!(skip_white(" "), "");
-        assert_eq!(skip_white("\n\t"), "");
-        assert_eq!(skip_white("\t  ??"), "??");
-        assert_eq!(skip_white(" __ \t "), "__ \t ");
-    }
-
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

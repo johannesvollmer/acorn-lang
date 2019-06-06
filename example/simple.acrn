@@ -135,7 +135,7 @@ display_name person = maybe.with_default "unknown" (maybe.map person $.name)
 
 // multi line functions
 full_name = person ->
-  { first & last = person.name }
+  first & last = person.name
   first ++ " " ++ last
 
 
@@ -165,8 +165,6 @@ List = T =>
   | empty
   | filled:
       &value: T &tail: List T
-
-
 
 
 // type parameter destructuring:
