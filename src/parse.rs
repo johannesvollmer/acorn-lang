@@ -463,7 +463,7 @@ pub fn expression_kind(expression: &tokenize::Expression) -> ExpressionKind {
         Tuple(members) => expression_kind(&members[0]), // TODO err on any member mismatch
         Sum(variants) => sum_expression_kind(&variants),
         Product(members) => expression_kind(&members[0].expression),
-        Function(function) => expression_kind(function.parameter.as_ref()),
+        Function(function) => expression_kind(&function.parameter),
         Scope(scope) => expression_kind(scope.result.as_ref()),
     }
 }
@@ -541,7 +541,7 @@ mod test {
     use super::*;
 
     fn tokenize_expression(text: &str) -> tokenize::Expression {
-        tokenize::parse_expression(text).unwrap().0
+        tokenize::parse_expression(text).unwrap()
     }
 
 
