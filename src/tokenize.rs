@@ -110,6 +110,7 @@ pub type ParseResult<T> = std::result::Result<T, ParseError>;
 
 #[derive(Clone, Eq, PartialEq, Debug)]
 pub enum ParseError {
+    ExpectedAtom { source: SourceLocation },
     ExpectedIdentifier { source: SourceLocation },
     ExpectedSymbol { symbol: String, source: SourceLocation },
     TabNotAllowed
@@ -267,14 +268,33 @@ impl<'s> Source<'s> {
 
 
     fn parse_function(&mut self) -> ParseResult<Expression> {
-        let first = self.parse_tuple()?;
+        let first = self.parse_function_application()?;
 
         if self.skip_white_and_symbol("->")? {
-            let result = self.parse_tuple()?;
+            let result = self.parse_function_application()?;
 
             Ok(Expression::Function(Box::new(Function {
                 parameter: first,
                 result
+            })))
+        }
+        else {
+            Ok(first)
+        }
+    }
+
+
+    fn parse_function_application(&mut self) -> ParseResult<Expression> {
+        let first = self.parse_tuple()?;
+
+        fn is_arg_symbol(c: char) -> bool {
+            c == '$' || c == '(' || ! Source::is_special_symbol(c)
+        }
+
+        if self.remaining.starts_with(is_arg_symbol) {
+            let argument = self.parse_tuple()?;
+            Ok(Expression::FunctionApplication(Box::new(FunctionApplication {
+                subject: first, argument
             })))
         }
         else {
@@ -301,7 +321,7 @@ impl<'s> Source<'s> {
     fn parse_sum(&mut self) -> ParseResult<Expression> {
         let mut variants = Vec::new();
         while self.skip_white_and_symbol("|")? {
-            variants.push(self.parse_variant()?)
+            variants.push(self.extract_variant()?)
         }
 
         if !variants.is_empty() {
@@ -312,7 +332,7 @@ impl<'s> Source<'s> {
         }
     }
 
-    fn parse_variant(&mut self) -> ParseResult<Variant> {
+    fn extract_variant(&mut self) -> ParseResult<Variant> {
         let name = self.parse_identifier()?;
 
         let content = {
@@ -340,18 +360,18 @@ impl<'s> Source<'s> {
 
         let mut members = Vec::new();
         while self.skip_white_and_symbol("&")? {
-            members.push(self.parse_member()?)
+            members.push(self.extract_member()?);
         }
 
         if !members.is_empty() {
             Ok(Expression::Product(members))
         }
         else {
-            self.parse_function_application()
+            self.parse_atom()
         }
     }
 
-    fn parse_member(&mut self) -> ParseResult<ProductMember> {
+    fn extract_member(&mut self) -> ParseResult<ProductMember> {
         let name = self.parse_identifier()?;
 
         let operator = {
@@ -366,30 +386,11 @@ impl<'s> Source<'s> {
             }
         };
 
-        let expression = self.parse_function_application()?;
+        let expression = self.parse_atom()?;
 
         Ok(ProductMember {
             name, expression, operator
         })
-    }
-
-
-    fn parse_function_application(&mut self) -> ParseResult<Expression> {
-        let first = self.parse_atom()?;
-
-        fn is_arg_symbol(c: char) -> bool {
-            !(":=+-*/<>".contains(c))
-        }
-
-        if self.remaining.starts_with(is_arg_symbol) {
-            let argument = self.parse_atom()?;
-            Ok(Expression::FunctionApplication(Box::new(FunctionApplication {
-                subject: first, argument
-            })))
-        }
-        else {
-            Ok(first)
-        }
     }
 
     fn parse_atom(&mut self) -> ParseResult<Expression> {
@@ -413,6 +414,11 @@ impl<'s> Source<'s> {
 
         else {
             self.parse_reference()
+
+                .map_err(|error|{ match error {
+                    ParseError::ExpectedIdentifier { source } => ParseError::ExpectedAtom { source },
+                    other => other
+                }})
         }
     }
 
@@ -464,6 +470,7 @@ impl<'s> Source<'s> {
             Ok(Expression::Identifier(parts))
         }
         else {
+            panic!();
             Err(ParseError::ExpectedIdentifier { source: self.location() })
         }
     }
@@ -485,6 +492,7 @@ impl<'s> Source<'s> {
         }
 
         else {
+            panic!();
             Err(ParseError::ExpectedIdentifier { source: self.location() })
         }
     }
@@ -542,25 +550,26 @@ impl<'s> Source<'s> {
     }
 
     fn skip_white(&mut self) -> ParseResult<()> {
-        for symbol in self.remaining.chars() {
-
-            if symbol == '\n' {
+        loop {
+            if self.skip_symbol("\n") {
                 self.line_number += 1;
                 self.line_indentation = 0;
                 self.line_byte_index = 0;
-
-                self.remaining = &self.remaining [ '\n'.len_utf8() .. ];
             }
 
-            // if the remaining line starts with a whitespace, record indentation
-            else if symbol == ' ' && self.line_byte_index == self.line_indentation {
-                self.line_byte_index += 1;
-                self.line_indentation += 1;
+            else if self.skip_symbol(" ") {
 
-                self.remaining = &self.remaining [ ' '.len_utf8() .. ];
+                // line_indentation counts the spaces, and the space char is 1 byte,
+                // so we can simply compare line_byte_index and indentation
+                if self.line_indentation + 1 == self.line_byte_index {
+
+                    // as long as the remaining line starts with a whitespace,
+                    // pull the line_indentation along with the byte index
+                    self.line_indentation += 1;
+                }
             }
 
-            else if symbol == '\t' {
+            else if self.remaining.starts_with("\t") {
                 return Err(ParseError::TabNotAllowed)
             }
 
@@ -613,8 +622,6 @@ mod test {
 
     #[test]
     fn test_parse_definition(){
-        /// FIXME definition cannot be parsed because parsing the binding already introduces scoped local definitions
-
         assert_eq!(
             source("Name = | name: std.string.String | anonymous").parse_definition(),
             Ok(Definition {
@@ -872,6 +879,18 @@ mod test {
 
     #[test]
     fn test_skip_symbol(){
+        {
+            let mut s = source("abc");
+            assert_eq!(s.skip_symbol("a"), true);
+            assert_eq!(s.remaining, "bc");
+
+            assert_eq!(s.skip_symbol("a"), false);
+            assert_eq!(s.remaining, "bc");
+
+            assert_eq!(s.skip_symbol("b"), true);
+            assert_eq!(s.remaining, "c");
+        }
+
         assert_eq!(source("x").skip_symbol("x"), true);
         assert_eq!(source(" t").skip_symbol("t"), false);
     }
@@ -884,12 +903,14 @@ mod test {
         assert_eq!(src.line_number, 0);
 
         src.skip_required_symbol("a").unwrap();
+        println!("skipped a {:?}", src);
         src.skip_white().unwrap();
         assert_eq!(src.line_number, 1);
         assert_eq!(src.line_indentation, 0);
 
 
         src.skip_required_symbol("b").unwrap();
+        println!("skipped b {:?}", src);
         assert_eq!(src.line_number, 1);
         assert_eq!(src.line_indentation, 0);
         src.skip_white().unwrap();
@@ -897,6 +918,7 @@ mod test {
         assert_eq!(src.line_indentation, 2);
 
         src.skip_required_symbol("c").unwrap();
+        println!("skipped c {:?}", src);
         src.skip_white().unwrap();
         assert_eq!(src.line_number, 3);
         assert_eq!(src.line_indentation, 1);

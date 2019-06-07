@@ -500,7 +500,7 @@ pub fn collapse_results<T, I>(results: I) -> CompileResult<Vec<T>>
 {
     results.fold(
         Ok(Vec::new()),
-        |mut vec, element| {
+        |vec, element| {
             vec.and_then(|mut vec|{
                 match element {
                     Ok(element) => {
@@ -520,7 +520,7 @@ pub fn collapse_named_results<T, I>(results: I) -> CompileResult<HashMap<String,
 {
     results.fold(
         Ok(HashMap::new()),
-        |mut vec, element| {
+        |vec, element| {
             vec.and_then(|mut vec|{
                 match element {
                     (name, Ok(value)) => {
