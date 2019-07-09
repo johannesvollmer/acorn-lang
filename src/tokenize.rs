@@ -7,7 +7,7 @@ pub type Reference = Vec<String>;
 
 
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
-struct Source<'s> {
+struct Tokenizer<'s> {
     pub line_indentation: usize,
     pub line_number: usize,
     pub line_byte_index: usize,
@@ -21,87 +21,47 @@ struct Source<'s> {
 // TODO any values, including case-expressions, not supported yet
 
 
+/// token tree.
+/// numbers are just constants named '4' or '8' that already have a value defined.
+/// floating point numbers also have fields called '0' and '141592' and such.
 #[derive(Clone, Eq, PartialEq, Debug)]
-pub struct File {
-    pub definitions: Vec<Definition>
-}
+pub enum Token {
+    /// multi-line function bodies, modules, ...
+    Scope (Vec<Token>),
 
-// name: String, age = 5, name: String = "Peter"
-#[derive(Clone, Eq, PartialEq, Debug)]
-pub struct Definition {
-    pub binding: Expression, // :
-    pub kind: Option<Expression>, // =
-    pub expression: Expression
-}
+    /// a = 5,  a & b = 5 & "hello"
+    Assignment(Box<Token>, Box<Token>),
 
+    /// b: Int, `(a, b): (String, Int)`
+    Annotation(Box<Token>, Box<Token>),
 
-#[derive(Clone, Eq, PartialEq, Debug)]
-pub enum Expression {
-    Function (Box<Function>),
+    /// A -> B
+    ValueFunction(Box<Token>, Box<Token>),
+
+    /// A => B
+    TypeFunction (Box<Token>, Box<Token>),
 
     /// `a,b,c`, `A,B,C`, also used for destructuring assignments
-    Tuple (Vec<Expression>),
+    Tuple (Vec<Token>),
 
     /// `| a | b: B | c`,  `|value = 5`, `|empty`, `|value: A |empty`
-    Sum (Vec<Variant>),
+    OneOfSet (Vec<Token>),
 
-    /// `& a = 5 & b = 6`, `a: A & b: C`, also used for destructuring assignments, ...
-    Product (Vec<ProductMember>),
-
-    /// std.string.String, Int, window.width, ...
-    Identifier(Reference),
+    /// `& a = 5 & b = 6`, `& a: A & b: C`, also used for destructuring assignments, ...
+    AllOfSet (Vec<Token>),
 
     /// `get_name person`, `List Int`, `get_name $` ...
-    FunctionApplication (Box<FunctionApplication>),
+    Application(Box<Token>, Box<Token>),
 
-    /// multi-line function bodies, modules, ...
-    Scope (Scope),
+    /// `std.string.String`
+    Access(Vec<Token>),
 
+    /// std, Int, width, 3, 141592, ...
+    Identifier(String),
+
+    /// "hello", "world"
     String (String),
-    Number (String),
 }
-
-
-#[derive(Clone, Eq, PartialEq, Debug)]
-pub struct Variant {
-    pub name: Identifier,
-    pub content: Option<VariantContent>,
-}
-
-#[derive(Clone, Eq, PartialEq, Debug)]
-pub struct VariantContent {
-    pub expression: Expression,
-    pub operator: char, // may be `=` or `:`
-}
-
-
-#[derive(Clone, Eq, PartialEq, Debug)]
-pub struct ProductMember {
-    pub name: Identifier,
-    pub expression: Expression,
-    pub operator: char, // may be `=` or `:`
-}
-
-/// `get_name person`, `Option.some 5`, `List Int`, ...
-#[derive(Clone, Eq, PartialEq, Debug)]
-pub struct FunctionApplication {
-    pub subject: Expression,
-    pub argument: Expression
-}
-
-/// includes function pub type declarations but also lambda expressions
-#[derive(Clone, Eq, PartialEq, Debug)]
-pub struct Function {
-    pub parameter: Expression, // this is a destructuring declaration
-    pub result: Expression
-}
-
-#[derive(Clone, Eq, PartialEq, Debug)]
-pub struct Scope {
-    pub definitions: Vec<Definition>,
-    pub result: Box<Expression>
-}
-
 
 
 
@@ -110,34 +70,30 @@ pub type ParseResult<T> = std::result::Result<T, ParseError>;
 
 #[derive(Clone, Eq, PartialEq, Debug)]
 pub enum ParseError {
-    ExpectedAtom { source: SourceLocation },
-    ExpectedIdentifier { source: SourceLocation },
-    ExpectedSymbol { symbol: String, source: SourceLocation },
-    TabNotAllowed
+    ExpectedAtom { location: SourceLocation },
+    ExpectedIdentifier { location: SourceLocation },
+    ExpectedSymbol { symbol: String, location: SourceLocation },
+    TabNotAllowed { location: SourceLocation }
 }
 
 #[derive(Clone, Eq, PartialEq, Debug)]
 pub struct SourceLocation {
-    byte_location: usize,
+    absolute_byte_location: usize,
     line_number: usize,
-    line_byte_loction: usize
+    line_byte_index: usize
 }
 
 
-pub fn parse(file: &str) -> ParseResult<File> {
-    Source::new(file).parse_file()
-}
-
-
-pub fn parse_expression(expression: &str) -> ParseResult<Expression> {
-    Source::new(expression).parse_expression()
+pub fn tokenize(file: &str) -> ParseResult<Token> {
+    Tokenizer::new(file).parse_file()
 }
 
 
 
-impl<'s> Source<'s> {
-    fn new(text: &str) -> Source {
-        Source {
+
+impl<'s> Tokenizer<'s> {
+    fn new(text: &str) -> Tokenizer {
+        Tokenizer {
             line_indentation: 0,
             line_number: 0,
             line_byte_index: 0,
@@ -149,8 +105,8 @@ impl<'s> Source<'s> {
     fn location(&self) -> SourceLocation {
         SourceLocation {
             line_number: self.line_number,
-            line_byte_loction: self.line_byte_index,
-            byte_location: self.source.len() - self.remaining.len(),
+            line_byte_index: self.line_byte_index,
+            absolute_byte_location: self.source.len() - self.remaining.len(),
         }
     }
 
@@ -159,346 +115,201 @@ impl<'s> Source<'s> {
     }
 
 
-    fn parse_file(&mut self) -> ParseResult<File> {
-        let mut definitions = Vec::new();
+    fn parse_file(&mut self) -> ParseResult<Token> {
+        let mut contents = Vec::new();
 
-        while !self.remaining.trim_start().is_empty() {
-            definitions.push(self.parse_definition()?);
-        }
-
-        Ok(File { definitions })
-    }
-
-    fn parse_definition(&mut self) -> ParseResult<Definition> {
-        let binding = self.parse_expression()?;
-
-        if self.skip_symbol(":") {
-            let annotation = self.parse_expression()?;
-            self.skip_white_and_required_symbol("=")?;
-            let expression = self.parse_expression()?;
-
-            Ok(Definition {
-                binding,
-                kind: Some(annotation),
-                expression
-            })
-        }
-        else if self.skip_white_and_symbol("=")? {
-            let expression = self.parse_expression()?;
-
-            Ok(Definition {
-                binding,
-                kind: None,
-                expression
-            })
-        }
-        else {
-            Err(ParseError::ExpectedSymbol { symbol: "=".to_owned(), source: self.location() })
-        }
-    }
-
-    fn parse_expression(&mut self) -> ParseResult<Expression> {
-        self.parse_scope()
-    }
-
-    fn parse_scope(&mut self) -> ParseResult<Expression> {
-        let old_indentation = self.line_indentation;
-        let old_line = self.line_number;
-
-        self.skip_white()?;
-        if self.line_number != old_line && self.line_indentation > old_indentation {
-
-            let mut scope_definitions = Vec::new();
-
-            let result_expression = loop {
-                self.skip_white()?;
-
-                if self.line_number != old_line && self.line_indentation < old_indentation {
-                    let result = self.parse_function()?;
-//                    if self.skip_symbol(":") || self.skip_symbol("=") {
-//                        return Err(ParseError::LastLineMustBeResult);
-//                    }
-                    break result
-                }
-
-
-                let binding_or_result = self.parse_function()?;
-
-                if self.skip_symbol(":") {
-                    let annotation = self.parse_function()?;
-                    self.skip_white_and_required_symbol("=")?;
-                    let expression = self.parse_function()?;
-
-                    scope_definitions.push(Definition {
-                        binding: binding_or_result,
-                        kind: Some(annotation),
-                        expression
-                    })
-                }
-                else if self.skip_white_and_symbol("=")? {
-                    let expression = self.parse_function()?;
-
-                    scope_definitions.push(Definition {
-                        binding: binding_or_result,
-                        kind: None,
-                        expression
-                    })
-                }
-                else {
-                    break binding_or_result
-                }
-            };
-
-            if !scope_definitions.is_empty() {
-                Ok(Expression::Scope(Scope {
-                    definitions: scope_definitions,
-                    result: Box::new(result_expression)
-                }))
+        loop {
+            self.skip_white();
+            if !self.remaining.trim_start().is_empty() {
+                contents.push(self.parse_element()?)
             }
             else {
-                Ok(result_expression)
+                break Ok(Token::Scope(contents))
             }
         }
-
-        else {
-            self.parse_function()
-        }
-
     }
 
-
-    fn parse_function(&mut self) -> ParseResult<Expression> {
-        let first = self.parse_function_application()?;
-
-        if self.skip_white_and_symbol("->")? {
-            let result = self.parse_function_application()?;
-
-            Ok(Expression::Function(Box::new(Function {
-                parameter: first,
-                result
-            })))
-        }
-        else {
-            Ok(first)
-        }
+    fn parse_element(&mut self) -> ParseResult<Token> {
+        self.parse_assignment()
     }
 
-
-    fn parse_function_application(&mut self) -> ParseResult<Expression> {
-        let first = self.parse_tuple()?;
-
-        fn is_arg_symbol(c: char) -> bool {
-            c == '$' || c == '(' || ! Source::is_special_symbol(c)
-        }
-
-        if self.remaining.starts_with(is_arg_symbol) {
-            let argument = self.parse_tuple()?;
-            Ok(Expression::FunctionApplication(Box::new(FunctionApplication {
-                subject: first, argument
-            })))
-        }
-        else {
-            Ok(first)
-        }
+    fn parse_assignment(&mut self) -> ParseResult<Token> {
+        self.parse_binary("=", Token::Assignment, Self::parse_annotation)
     }
 
-    fn parse_tuple(&mut self) -> ParseResult<Expression> {
-        self.skip_white_and_symbol(",")?;
-
-        let mut members = vec![ self.parse_sum()? ];
-        while self.skip_white_and_symbol(",")? {
-            members.push(self.parse_sum()?);
-        }
-
-        if members.len() < 2 {
-            Ok(members.remove(0))
-        }
-        else {
-            Ok(Expression::Tuple(members))
-        }
+    fn parse_annotation(&mut self) -> ParseResult<Token> {
+        self.parse_binary(":", Token::Annotation, Self::parse_type_function)
     }
 
-    fn parse_sum(&mut self) -> ParseResult<Expression> {
-        let mut variants = Vec::new();
-        while self.skip_white_and_symbol("|")? {
-            variants.push(self.extract_variant()?)
-        }
-
-        if !variants.is_empty() {
-            Ok(Expression::Sum(variants))
-        }
-        else {
-            self.parse_product()
-        }
+    fn parse_type_function(&mut self) -> ParseResult<Token> {
+        self.parse_binary("=>", Token::TypeFunction, Self::parse_value_function)
     }
 
-    fn extract_variant(&mut self) -> ParseResult<Variant> {
-        let name = self.parse_identifier()?;
+    fn parse_value_function(&mut self) -> ParseResult<Token> {
+        self.parse_binary("->", Token::ValueFunction, Self::parse_tuple)
+    }
 
-        let content = {
-            if self.skip_white_and_symbol("=")? {
-                Some(VariantContent {
-                    expression: self.parse_product()?,
-                    operator: '='
-                })
+    fn parse_scope(&mut self) -> ParseResult<Token> {
+        self.parse_scoped(Self::parse_element, Self::parse_tuple)
+    }
+
+    fn parse_tuple(&mut self) -> ParseResult<Token> {
+        self.parse_repeated(",", Token::Tuple, Self::parse_all_of_set)
+    }
+
+    fn parse_all_of_set(&mut self) -> ParseResult<Token> {
+        self.parse_repeated(
+            "&", Token::AllOfSet,
+            Self::parse_element // |this| this.parse_identified(Self::parse_one_of_set)
+        )
+    }
+
+    fn parse_one_of_set(&mut self) -> ParseResult<Token> {
+        self.parse_repeated(
+            "|", Token::OneOfSet,
+            Self::parse_element // |this| this.parse_identified(Self::parse_application)
+        )
+    }
+
+    fn parse_application(&mut self) -> ParseResult<Token> {
+        let function = self.parse_access()?;
+
+        if self.remaining.starts_with(" ") {
+            self.skip_white();
+
+            if !self.remaining.starts_with(Self::is_special_symbol)
+                || self.remaining.starts_with("(") || self.remaining.starts_with("$")
+            {
+                let argument = self.parse_access()?;
+                Ok(Token::Application(Box::new(function), Box::new(argument)))
             }
-            else if self.skip_white_and_symbol(":")? {
-                Some(VariantContent {
-                    expression: self.parse_product()?,
-                    operator: ':'
-                })
-            }
-            else { None }
-        };
-
-        Ok(Variant {
-            name, content
-        })
-    }
-
-    fn parse_product(&mut self) -> ParseResult<Expression> {
-
-        let mut members = Vec::new();
-        while self.skip_white_and_symbol("&")? {
-            members.push(self.extract_member()?);
-        }
-
-        if !members.is_empty() {
-            Ok(Expression::Product(members))
-        }
-        else {
-            self.parse_atom()
-        }
-    }
-
-    fn extract_member(&mut self) -> ParseResult<ProductMember> {
-        let name = self.parse_identifier()?;
-
-        let operator = {
-            if self.skip_white_and_symbol("=")? { '=' }
-            else if self.skip_white_and_symbol(":")? { ':' }
-
             else {
-                return Err(ParseError::ExpectedSymbol {
-                    symbol: "= or :".to_owned(),
-                    source: self.location()
-                })
+                Ok(function)
             }
-        };
-
-        let expression = self.parse_atom()?;
-
-        Ok(ProductMember {
-            name, expression, operator
-        })
+        }
+        else {
+            Ok(function)
+        }
     }
 
-    fn parse_atom(&mut self) -> ParseResult<Expression> {
+    fn parse_access(&mut self) -> ParseResult<Token> {
+        self.parse_repeated(".", Token::Access, Self::parse_atom)
+    }
+
+
+    /// parse either brackets, string literals, or identifiers (including number literals)
+    fn parse_atom(&mut self) -> ParseResult<Token> {
         self.skip_white()?;
 
-        if let Some(number) = self.attempt_parse_number() {
-            Ok(Expression::Number(number.to_owned()))
-        }
-
-        else if self.skip_symbol("(") {
-            let group = self.parse_expression()?;
+        if self.skip_symbol("(") {
+            let group = self.parse_element()?;
             self.skip_white_and_required_symbol(")")?;
             Ok(group)
         }
 
         else if self.skip_symbol("\"") {
-            let string = self.extract_chars_until(|c:char| c == '"').to_owned();
+            let string = self.extract_chars_until(|c:char| c == '"');
             self.skip_required_symbol("\"")?;
-            Ok(Expression::String(string))
+            Ok(Token::String(string.to_owned()))
         }
 
         else {
-            self.parse_reference()
-
-                .map_err(|error|{ match error {
-                    ParseError::ExpectedIdentifier { source } => ParseError::ExpectedAtom { source },
-                    other => other
-                }})
-        }
-    }
-
-    fn attempt_parse_number(&mut self) -> Option<String> {
-        fn is_not_number(c: char) -> bool {
-            !c.is_digit(10) && c != '.'
-        }
-
-        let mut number_source = *self;
-        let number = number_source.extract_chars_until(is_not_number).to_owned();
-
-        if !number.is_empty() {
-            // only parse number if it is finished with the next symbol
-            let successor_finishes_number = {
-                if let Some(successor) = number_source.remaining.chars().next() {
-                    Source::is_special_symbol(successor)
-                }
-                else {
-                    true
-                }
-            };
-
-            if successor_finishes_number {
-                // apply parsing changes and then return
-                *self = number_source;
-                Some(number)
-            }
-            else {
-                None
-            }
-        }
-        else {
-            // do not apply parsing changes
-            None
+            // name, _the_parameter, 3, 141592, ... (includes number literals)
+            let identifier = self.extract_chars_until(Self::is_special_symbol);
+            if !identifier.is_empty() { Ok(Token::Identifier(identifier.to_owned())) }
+            else { Err(ParseError::ExpectedAtom { location: self.location() }) }
         }
     }
 
 
 
-    fn parse_reference(&mut self) -> ParseResult<Expression> {
-        let first = self.parse_identifier()?;
-        let mut parts = vec![ first ];
-
-        while self.skip_white_and_symbol(".")? {
-            parts.push(self.parse_identifier()?);
-        }
-
-        if !parts.is_empty() {
-            Ok(Expression::Identifier(parts))
-        }
-        else {
-            panic!();
-            Err(ParseError::ExpectedIdentifier { source: self.location() })
-        }
-    }
 
 
+    fn parse_scoped<FI, FE>(&mut self, indented_parser: FI, else_parser: FE) -> ParseResult<Token>
+        where FI: Fn(&mut Self) -> ParseResult<Token>,  FE: Fn(&mut Self) -> ParseResult<Token>
+    {
+        let old_indentation = self.line_indentation;
+        let old_line = self.line_number;
 
-    /// name, _the_parameter, ...
-    fn parse_identifier(&mut self) -> ParseResult<Identifier> {
         self.skip_white()?;
 
-        fn is_not_identifier (c: char) -> bool {
-            c.is_whitespace() || ("&|@,():=.\"'").contains(c)
-        }
+        if self.line_number != old_line && self.line_indentation > old_indentation {
+            let mut lines = Vec::new();
 
-        let name = self.extract_chars_until(is_not_identifier);
+            loop {
+                self.skip_white()?;
 
-        if !name.is_empty() {
-            Ok(name.to_owned())
+                if self.line_indentation <= old_indentation {
+                    break Ok(Token::Scope(lines));
+                }
+
+                else {
+                    lines.push(indented_parser(self)?);
+                }
+            }
         }
 
         else {
-            panic!();
-            Err(ParseError::ExpectedIdentifier { source: self.location() })
+            else_parser(self)
         }
     }
 
+    fn parse_identified<F>(&mut self, sub_parser: F) -> ParseResult<Token>
+        where F: Fn(&mut Self) -> ParseResult<Token>,
+    {
+        let identifier = self.parse_atom()?;
+
+        if self.skip_white_and_symbol("=")? {
+            Ok(Token::Assignment(Box::new(identifier), Box::new(sub_parser(self)?)))
+        }
+        else if self.skip_white_and_symbol(":")? {
+            Ok(Token::Annotation(Box::new(identifier), Box::new(sub_parser(self)?)))
+        }
+        else {
+            Ok(identifier)
+        }
+    }
+
+    fn parse_binary<F, V>(&mut self, operator: &'static str, variant: V, sub_parser: F) -> ParseResult<Token>
+        where F: Fn(&mut Self) -> ParseResult<Token>, V: Fn(Box<Token>, Box<Token>) -> Token
+    {
+        let left = sub_parser(self)?;
+
+        if self.skip_white_and_symbol(operator)? {
+            let right = sub_parser(self)?;
+            Ok(variant(Box::new(left), Box::new(right)))
+        }
+        else {
+            Ok(left)
+        }
+    }
+
+    fn parse_repeated<F, V>(&mut self, operator: &'static str, variant: V, sub_parser: F) -> ParseResult<Token>
+        where F: Fn(&mut Self) -> ParseResult<Token>, V: Fn(Vec<Token>) -> Token
+    {
+        let first = sub_parser(self)?;
+
+        self.skip_white();
+        if self.remaining.starts_with(operator){
+            let mut parts = vec![ first ];
+
+            while self.skip_white_and_symbol(operator)? {
+                parts.push(sub_parser(self)?);
+            }
+
+            Ok(variant(parts))
+        }
+        else {
+            Ok(first)
+        }
+    }
+
+
+
+
+
     /// returns empty string on immediately found
-    fn extract_chars_until<F>(&mut self, end_where: F) -> &str
+    fn extract_chars_until<F>(&mut self, end_where: F) -> &'s str
         where F: Fn(char) -> bool
     {
         if let Some(end) = self.remaining.find(end_where){
@@ -527,7 +338,7 @@ impl<'s> Source<'s> {
         if self.skip_symbol(symbol) { Ok(()) }
 
         else {
-            Err(ParseError::ExpectedSymbol { symbol: symbol.to_owned(), source: self.location() })
+            Err(ParseError::ExpectedSymbol { symbol: symbol.to_owned(), location: self.location() })
         }
     }
 
@@ -570,7 +381,7 @@ impl<'s> Source<'s> {
             }
 
             else if self.remaining.starts_with("\t") {
-                return Err(ParseError::TabNotAllowed)
+                return Err(ParseError::TabNotAllowed { location: self.location() })
             }
 
             else {
@@ -610,8 +421,8 @@ mod test {
     }
 
 
-    fn source(source: &str) -> Source {
-        Source {
+    fn source(source: &str) -> Tokenizer {
+        Tokenizer {
             line_indentation: 0,
             line_number: 0,
             line_byte_index: 0,
@@ -622,7 +433,7 @@ mod test {
 
     #[test]
     fn test_parse_definition(){
-        assert_eq!(
+        /*assert_eq!(
             source("Name = | name: std.string.String | anonymous").parse_definition(),
             Ok(Definition {
                 binding: name!{ Name },
@@ -641,33 +452,33 @@ mod test {
                     },
                 ])
             })
-        );
+        );*/
     }
 
     #[test]
     fn test_parse_application(){
-        assert_eq!(
+        /*assert_eq!(
             source("string.trim user_name").parse_function_application(),
             Ok(Expression::FunctionApplication(Box::new(FunctionApplication {
                 subject: name!{ string.trim },
                 argument: name! { user_name }
             })))
-        );
+        );*/
     }
 
     #[test]
     fn test_parse_atom(){
-        assert_eq!(source(" Name").parse_atom(), Ok(name!{ Name }));
+        /*assert_eq!(source(" Name").parse_atom(), Ok(name!{ Name }));
         assert_eq!(source(" a.Name n").parse_atom(), Ok(name!{ a.Name }));
         assert_eq!(source(" a3.1Name 0n").parse_atom(), Ok(Expression::Identifier(vec!["a3".to_owned(), "1Name".to_owned()])));
         assert_eq!(source(" 3.1 0n").parse_atom(), Ok(Expression::Number("3.1".to_owned())));
-        assert_eq!(source(" \"legendary\"xo").parse_atom(), Ok(Expression::String("legendary".to_owned())));
+        assert_eq!(source(" \"legendary\"xo").parse_atom(), Ok(Expression::String("legendary".to_owned())));*/
     }
 
 
     #[test]
     fn test_parse_function_or_other_kind(){
-        assert_eq!(
+        /*assert_eq!(
             source("| name: std.String | anonymous").parse_function(),
             Ok(Expression::Sum(vec![
                 Variant {
@@ -720,12 +531,12 @@ mod test {
                     },
                 ]),
             })))
-        );
+        );*/
     }
 
     #[test]
     fn test_parse_tuple_or_other_kind(){
-        assert_eq!(
+        /*assert_eq!(
             source(",Float ,str.String ,Int").parse_tuple(),
             Ok(Expression::Tuple(vec![
                 name!{ Float },
@@ -761,13 +572,13 @@ mod test {
                 name!{ str.String },
                 name!{ Int },
             ]))
-        );
+        );*/
     }
 
 
     #[test]
     fn test_parse_sum_or_other_kind(){
-        assert_eq!(source(" std .str .String ->").parse_sum(), Ok(name!{ std.str.String }));
+        /*assert_eq!(source(" std .str .String ->").parse_sum(), Ok(name!{ std.str.String }));
 
         assert_eq!(
             source("| name: std.String | anonymous").parse_sum(),
@@ -813,12 +624,12 @@ mod test {
                     content: None,
                 },
             ] ))
-        );
+        );*/
     }
 
     #[test]
     fn test_parse_product_or_other_kind(){
-        assert_eq!(source(" String").parse_product(), Ok(name!{ String }));
+        /*assert_eq!(source(" String").parse_product(), Ok(name!{ String }));
         assert_eq!(source(" std.String").parse_product(), Ok(name!{ std.String }));
         assert_eq!(source(" std .str .String").parse_product(), Ok(name!{ std.str.String }));
 
@@ -854,25 +665,25 @@ mod test {
                     operator: '='
                 },
             ]))
-        );
+        );*/
     }
 
     #[test]
     fn test_parse_chained_identifier(){
-        assert_eq!(source("hello world").parse_reference(), Ok(name!{ hello }));
-        assert_eq!(source("hello.world").parse_reference(), Ok(name!{ hello.world }));
-        assert_eq!(source(" the .world ").parse_reference(), Ok(name!{ the.world }));
-        assert_eq!(source("hello .world but not this").parse_reference(), Ok(name!{ hello.world }));
-        assert_eq!(source("hello .world@").parse_reference(), Ok(name!{ hello.world }));
+//        assert_eq!(source("hello world").parse_reference(), Ok(name!{ hello }));
+//        assert_eq!(source("hello.world").parse_reference(), Ok(name!{ hello.world }));
+//        assert_eq!(source(" the .world ").parse_reference(), Ok(name!{ the.world }));
+//        assert_eq!(source("hello .world but not this").parse_reference(), Ok(name!{ hello.world }));
+//        assert_eq!(source("hello .world@").parse_reference(), Ok(name!{ hello.world }));
     }
 
     #[test]
     fn test_parse_identifier(){
-        assert_eq!(source("hello world").parse_identifier(), Ok("hello".to_owned()));
-        assert_eq!(source("hello.world").parse_identifier(), Ok("hello".to_owned()));
-        assert_eq!(source(" the .world ").parse_identifier(), Ok("the".to_owned()));
-        assert_eq!(source(" world+").parse_identifier(), Ok("world+".to_owned()));
-        assert_eq!(source(" world@").parse_identifier(), Ok("world".to_owned()));
+        assert_eq!(source("hello world").parse_atom(), Ok(Token::Identifier("hello".to_owned())));
+        assert_eq!(source("hello.world").parse_atom(), Ok(Token::Identifier("hello".to_owned())));
+        assert_eq!(source(" the .world ").parse_atom(), Ok(Token::Identifier("the".to_owned())));
+        assert_eq!(source(" world+").parse_atom(), Ok(Token::Identifier("world+".to_owned())));
+        assert_eq!(source(" world@").parse_atom(), Ok(Token::Identifier("world".to_owned())));
         // assert_panics!(parse_identifier("("), (("", "(")));
         // assert_panics!(parse_identifier(""), (("", "")));
     }
@@ -897,7 +708,7 @@ mod test {
 
     #[test]
     fn test_skip_white(){
-        let mut src : Source = source("a\nb \n  c\n d ");
+        let mut src : Tokenizer = source("a\nb \n  c\n d ");
 
         src.skip_white().unwrap();
         assert_eq!(src.line_number, 0);

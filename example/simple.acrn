@@ -184,7 +184,15 @@ Bool =
 
 Int8 = 0 | 1 | 2 | ... | 255
 
-Float32 = ... | 0.0 | 0.0000001 | 0.000002 | ...  // TODO what about those dots?
+
+// NUMBERS LITERALS:
+// import all float literals
+pi_explicit = std.float.32.literals. 3.14159265
+
+// or
+&.. = std.float.32.literals
+pi_imported: f32 = 3.14159265
+
 
 
 

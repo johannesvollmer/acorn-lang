@@ -6,3 +6,5 @@ edition = "2018"
 
 [dependencies]
 smallvec = "*"
+cranelift = "0.33.0"
+cranelift-frontend = "0.33.0"

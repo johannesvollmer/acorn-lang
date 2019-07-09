@@ -1,6 +1,5 @@
 use super::tokenize;
 use std::collections::HashMap;
-use crate::tokenize::{Definition, ProductMember, Variant};
 
 type FunctionId = usize;
 
@@ -105,13 +104,13 @@ pub type CompileResult<T> = std::result::Result<T, CompileError>;
 pub enum CompileError {
     NotFound(Vec<String>),
     InvalidNumber(String),
-    InvalidBindingSyntax(tokenize::Expression),
+    InvalidBindingSyntax(tokenize::Token),
     NestedBindingSyntaxForbidden(tokenize::Reference),
-    InvalidTypeAnnotation(tokenize::Expression),
+    InvalidTypeAnnotation(tokenize::Token),
     TypeMismatch { annotated: Kind, found: Kind },
     ExpectedKindButFoundValue(Value),
     ExpectedValueButFoundKind(Kind),
-    ExpectedVariantButFoundKind(tokenize::Expression)
+    ExpectedVariantButFoundKind(tokenize::Token)
 }
 
 
@@ -120,6 +119,7 @@ pub enum ExpressionKind {
     Value, Kind, Unknown
 }
 
+/*
 
 impl Value {
     /// return err on reference not found
@@ -203,7 +203,7 @@ pub fn compile_definition(definition: tokenize::Definition, scope: Scope, main: 
                           -> CompileResult<(String, Expression)>
 {
     let Definition { binding, kind, expression } = definition;
-    use tokenize::Expression::*;
+    use tokenize::Token::*;
 
     match binding {
         Identifier(mut identifier) => {
@@ -247,14 +247,14 @@ pub fn compile_definition(definition: tokenize::Definition, scope: Scope, main: 
             }
         }
 
-        FunctionApplication(_) => panic!("Type parameters not supported yet"),
+        Application(_) => panic!("Type parameters not supported yet"),
         Tuple(_) | Product(_) | Sum(_) => panic!("destructuring not supported yet"),
         invalid => return Err(CompileError::InvalidBindingSyntax(invalid))
     }
 }
 
 
-pub fn compile_expression(expression: tokenize::Expression, scope: Scope, main: &Module) -> CompileResult<Expression> {
+pub fn compile_expression(expression: tokenize::Token, scope: Scope, main: &Module) -> CompileResult<Expression> {
     if expression_kind(&expression) == ExpressionKind::Value {
         compile_value(expression, scope, main)
             .map(|value| Expression::Value(value))
@@ -266,8 +266,8 @@ pub fn compile_expression(expression: tokenize::Expression, scope: Scope, main: 
 }
 
 
-pub fn compile_kind(expression: tokenize::Expression, scope: Scope, main: &Module) -> CompileResult<Kind> {
-    use tokenize::Expression::*;
+pub fn compile_kind(expression: tokenize::Token, scope: Scope, main: &Module) -> CompileResult<Kind> {
+    use tokenize::Token::*;
 
     match expression {
         Tuple(members) => compile_tuple_kind(members, scope, main),
@@ -284,7 +284,7 @@ pub fn compile_kind(expression: tokenize::Expression, scope: Scope, main: &Modul
 
 
 pub fn compile_tuple_kind(
-    members: Vec<tokenize::Expression>, scope: Scope, main: &Module
+    members: Vec<tokenize::Token>, scope: Scope, main: &Module
 ) -> CompileResult<Kind>
 {
     let members: Result<Vec<Kind>, CompileError> = members.into_iter()
@@ -322,10 +322,10 @@ pub fn compile_sum_kind(
 
 
 pub fn compile_value(
-    expression: tokenize::Expression, scope: Scope, main: &Module
+    expression: tokenize::Token, scope: Scope, main: &Module
 ) -> CompileResult<Value>
 {
-    use tokenize::Expression::*;
+    use tokenize::Token::*;
 
     Ok(match expression {
         String(value) => Value::String(value),
@@ -366,7 +366,7 @@ pub fn compile_value(
 
 
 pub fn compile_tuple_value(
-    members: Vec<tokenize::Expression>, scope: Scope, main: &Module
+    members: Vec<tokenize::Token>, scope: Scope, main: &Module
 ) -> CompileResult<Value>
 {
     let members: Result<Vec<Value>, CompileError> = members
@@ -455,10 +455,10 @@ impl Expression {
 
 
 /// otherwise, is kind
-pub fn expression_kind(expression: &tokenize::Expression) -> ExpressionKind {
-    use tokenize::Expression::*;
+pub fn expression_kind(expression: &tokenize::Token) -> ExpressionKind {
+    use tokenize::Token::*;
     match expression {
-        String(_) | Number(_) | FunctionApplication(_) => ExpressionKind::Value,
+        String(_) | Number(_) | Application(_) => ExpressionKind::Value,
         Identifier(names) => reference_expression_kind(names),
         Tuple(members) => expression_kind(&members[0]), // TODO err on any member mismatch
         Sum(variants) => sum_expression_kind(&variants),
@@ -540,8 +540,8 @@ pub fn collapse_named_results<T, I>(results: I) -> CompileResult<HashMap<String,
 mod test {
     use super::*;
 
-    fn tokenize_expression(text: &str) -> tokenize::Expression {
-        tokenize::parse_expression(text).unwrap()
+    fn tokenize_expression(text: &str) -> tokenize::Token {
+        tokenize::tokenize(text).unwrap()
     }
 
 
@@ -592,7 +592,7 @@ mod test {
 
     #[test]
     fn test_expression_kind(){
-        use tokenize::Expression::*;
+        use tokenize::Token::*;
 
         assert_eq!(expression_kind(&String("hello".to_owned())), ExpressionKind::Value);
         assert_eq!(expression_kind(&Identifier(vec!["std".to_owned(), "string".to_owned()])), ExpressionKind::Value);
@@ -608,6 +608,7 @@ mod test {
 
 
 
+*/
 
 
 
