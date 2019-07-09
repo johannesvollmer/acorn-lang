@@ -44,11 +44,11 @@ pub enum Token {
     /// `a,b,c`, `A,B,C`, also used for destructuring assignments
     Tuple (Vec<Token>),
 
-    /// `| a | b: B | c`,  `|value = 5`, `|empty`, `|value: A |empty`
-    OneOfSet (Vec<Token>),
+    /// `| a | b: B | c`,  `|value = 5`, `|empty`, `|value: A |empty`, also used for destructuring assignments
+    Variants (Vec<Token>),
 
     /// `& a = 5 & b = 6`, `& a: A & b: C`, also used for destructuring assignments, ...
-    AllOfSet (Vec<Token>),
+    Structure (Vec<Token>),
 
     /// `get_name person`, `List Int`, `get_name $` ...
     Application(Box<Token>, Box<Token>),
@@ -133,6 +133,29 @@ impl<'s> Tokenizer<'s> {
         self.parse_assignment()
     }
 
+
+    // OPERATOR PRECEDENCE:
+    // =
+    // :
+    // =>
+    // ->
+    // \t
+    // ,
+    // &
+    // = (inside structures, assignments have highest level again)
+    // : (inside structures, annotations have second highest level again)
+    // |
+    // = (inside variants, assignments have highest level again)
+    // : (inside variants, annotations have second highest level again)
+    // function argument
+    // .
+    // ()
+    // ""
+    // identifier
+
+
+
+
     fn parse_assignment(&mut self) -> ParseResult<Token> {
         self.parse_binary("=", Token::Assignment, Self::parse_annotation)
     }
@@ -154,21 +177,41 @@ impl<'s> Tokenizer<'s> {
     }
 
     fn parse_tuple(&mut self) -> ParseResult<Token> {
-        self.parse_repeated(",", Token::Tuple, Self::parse_all_of_set)
+        self.parse_repeated(",", Token::Tuple, Self::parse_structure)
     }
 
-    fn parse_all_of_set(&mut self) -> ParseResult<Token> {
+    fn parse_structure(&mut self) -> ParseResult<Token> {
         self.parse_repeated(
-            "&", Token::AllOfSet,
-            Self::parse_element // |this| this.parse_identified(Self::parse_one_of_set)
+            "&", Token::Structure,
+//            Self::parse_variants //
+            //|this| this.parse_identified(Self::parse_variants)
+            Self::parse_structure_assignment
         )
     }
 
-    fn parse_one_of_set(&mut self) -> ParseResult<Token> {
+    fn parse_structure_assignment(&mut self) -> ParseResult<Token> {
+        self.parse_binary("=", Token::Assignment, Self::parse_structure_annotation)
+    }
+
+    fn parse_structure_annotation(&mut self) -> ParseResult<Token> {
+        self.parse_binary(":", Token::Annotation, Self::parse_variants)
+    }
+
+    fn parse_variants(&mut self) -> ParseResult<Token> {
         self.parse_repeated(
-            "|", Token::OneOfSet,
-            Self::parse_element // |this| this.parse_identified(Self::parse_application)
+            "|", Token::Variants,
+//            Self::parse_application
+//                |this| this.parse_identified(Self::parse_application)
+    Self::parse_variants_assignment
         )
+    }
+
+    fn parse_variants_assignment(&mut self) -> ParseResult<Token> {
+        self.parse_binary("=", Token::Assignment, Self::parse_variants_annotation)
+    }
+
+    fn parse_variants_annotation(&mut self) -> ParseResult<Token> {
+        self.parse_binary(":", Token::Annotation, Self::parse_application)
     }
 
     fn parse_application(&mut self) -> ParseResult<Token> {
@@ -254,10 +297,10 @@ impl<'s> Tokenizer<'s> {
         }
     }
 
-    fn parse_identified<F>(&mut self, sub_parser: F) -> ParseResult<Token>
+    /*fn parse_identified<F>(&mut self, sub_parser: F) -> ParseResult<Token>
         where F: Fn(&mut Self) -> ParseResult<Token>,
     {
-        let identifier = self.parse_atom()?;
+        let identifier = sub_parser(self)?;
 
         if self.skip_white_and_symbol("=")? {
             Ok(Token::Assignment(Box::new(identifier), Box::new(sub_parser(self)?)))
@@ -268,7 +311,7 @@ impl<'s> Tokenizer<'s> {
         else {
             Ok(identifier)
         }
-    }
+    }*/
 
     fn parse_binary<F, V>(&mut self, operator: &'static str, variant: V, sub_parser: F) -> ParseResult<Token>
         where F: Fn(&mut Self) -> ParseResult<Token>, V: Fn(Box<Token>, Box<Token>) -> Token
@@ -412,11 +455,14 @@ impl<'s> Tokenizer<'s> {
 mod test {
     use super::*;
 
-    macro_rules! name {
-        ($($identifier:ident).*) => {
-            Expression::Identifier(vec![
-                $(stringify!($identifier) .to_owned() ,)*
+    macro_rules! tokens {
+        (identifiers $($identifier:ident).*) => {
+            Token::Access(vec![
+                $( tokens! { identifier $identifier } ,)*
             ])
+        };
+        (identifier $name:ident) => {
+                Token::Identifier(stringify!($name) .to_owned())
         };
     }
 
@@ -431,261 +477,84 @@ mod test {
         }
     }
 
-    #[test]
-    fn test_parse_definition(){
-        /*assert_eq!(
-            source("Name = | name: std.string.String | anonymous").parse_definition(),
-            Ok(Definition {
-                binding: name!{ Name },
-                kind: None,
-                expression: Expression::Sum(vec![
-                    Variant {
-                        name: "name".to_string(),
-                        content: Some(VariantContent {
-                            expression: name!{ std.string.String },
-                            operator: ':'
-                        })
-                    },
-                    Variant {
-                        name: "anonymous".to_string(),
-                        content: None
-                    },
-                ])
-            })
-        );*/
-    }
 
     #[test]
-    fn test_parse_application(){
-        /*assert_eq!(
-            source("string.trim user_name").parse_function_application(),
-            Ok(Expression::FunctionApplication(Box::new(FunctionApplication {
-                subject: name!{ string.trim },
-                argument: name! { user_name }
-            })))
-        );*/
+    fn test_parse_element(){
+        assert_eq!(source("a | b: T").parse_element(), Ok(
+            Token::Variants(vec![
+                Token::Identifier("a".to_owned()),
+                Token::Annotation(
+                    Box::new(Token::Identifier("b".to_owned())),
+                    Box::new(Token::Identifier("T".to_owned())),
+                ),
+            ])
+        ));
+
+        assert_eq!(source("a & b: T & c: F").parse_element(), Ok(
+            Token::Structure(vec![
+                Token::Identifier("a".to_owned()),
+                Token::Annotation(
+                    Box::new(Token::Identifier("b".to_owned())),
+                    Box::new(Token::Identifier("T".to_owned())),
+                ),
+                Token::Annotation(
+                    Box::new(Token::Identifier("c".to_owned())),
+                    Box::new(Token::Identifier("F".to_owned())),
+                ),
+            ])
+        ));
+
+        assert_eq!(source("a & b: (c: A & d: B)").parse_element(), Ok(
+            Token::Structure(vec![
+                Token::Identifier("a".to_owned()),
+                Token::Annotation(
+                    Box::new(Token::Identifier("b".to_owned())),
+                    Box::new(Token::Structure(vec![
+                        Token::Annotation(
+                            Box::new(Token::Identifier("c".to_owned())),
+                            Box::new(Token::Identifier("A".to_owned())),
+                        ),
+                        Token::Annotation(
+                            Box::new(Token::Identifier("d".to_owned())),
+                            Box::new(Token::Identifier("B".to_owned())),
+                        ),
+                    ])),
+                ),
+
+            ])
+        ));
+
+        assert_eq!(source("a | b: (c: A & d: B)").parse_element(), Ok(
+            Token::Variants(vec![
+                Token::Identifier("a".to_owned()),
+                Token::Annotation(
+                    Box::new(Token::Identifier("b".to_owned())),
+                    Box::new(Token::Structure(vec![
+                        Token::Annotation(
+                            Box::new(Token::Identifier("c".to_owned())),
+                            Box::new(Token::Identifier("A".to_owned())),
+                        ),
+                        Token::Annotation(
+                            Box::new(Token::Identifier("d".to_owned())),
+                            Box::new(Token::Identifier("B".to_owned())),
+                        ),
+                    ])),
+                ),
+
+            ])
+        ));
+
+
+        // TODO test tuples, assignment, file, scope, function, application
+
     }
 
-    #[test]
-    fn test_parse_atom(){
-        /*assert_eq!(source(" Name").parse_atom(), Ok(name!{ Name }));
-        assert_eq!(source(" a.Name n").parse_atom(), Ok(name!{ a.Name }));
-        assert_eq!(source(" a3.1Name 0n").parse_atom(), Ok(Expression::Identifier(vec!["a3".to_owned(), "1Name".to_owned()])));
-        assert_eq!(source(" 3.1 0n").parse_atom(), Ok(Expression::Number("3.1".to_owned())));
-        assert_eq!(source(" \"legendary\"xo").parse_atom(), Ok(Expression::String("legendary".to_owned())));*/
-    }
-
-
-    #[test]
-    fn test_parse_function_or_other_kind(){
-        /*assert_eq!(
-            source("| name: std.String | anonymous").parse_function(),
-            Ok(Expression::Sum(vec![
-                Variant {
-                    name: "name".to_string(),
-                    content: Some(VariantContent {
-                        expression: name!{ std.String },
-                        operator: ':'
-                    })
-                },
-                Variant {
-                    name: "anonymous".to_string(),
-                    content: None
-                }
-            ] ))
-        );
-
-        assert_eq!(
-            source("String -> Int").parse_function(),
-            Ok(Expression::Function(Box::new(Function {
-                parameter: name!{ String },
-                result: name!{ Int },
-            })))
-        );
-
-        assert_eq!(
-            source("String -> ,Int,String").parse_function(),
-            Ok(Expression::Function(Box::new(Function {
-                parameter: name!{ String },
-                result: Expression::Tuple(vec![
-                    name!{ Int },
-                    name!{ String }
-                ]),
-            })))
-        );
-
-        assert_eq!(
-            source("a,b -> &name = \"ab\" & age = 10 ").parse_function(),
-            Ok(Expression::Function(Box::new(Function {
-                parameter: Expression::Tuple(vec![name!{ a }, name! { b } ]),
-                result: Expression::Product(vec![
-                    ProductMember {
-                        name: "name".to_owned(),
-                        expression: Expression::String("ab".to_owned()),
-                        operator: '='
-                    },
-                    ProductMember {
-                        name: "age".to_owned(),
-                        expression: Expression::Number("10".to_owned()),
-                        operator: '='
-                    },
-                ]),
-            })))
-        );*/
-    }
-
-    #[test]
-    fn test_parse_tuple_or_other_kind(){
-        /*assert_eq!(
-            source(",Float ,str.String ,Int").parse_tuple(),
-            Ok(Expression::Tuple(vec![
-                name!{ Float },
-                name!{ str.String },
-                name!{ Int },
-            ]))
-        );
-
-        assert_eq!(
-            source(r#" , 5 , "hello" , Int"#).parse_tuple(),
-            Ok(Expression::Tuple(vec![
-                Expression::Number("5".to_owned()),
-                Expression::String("hello".to_owned()),
-                name!{ Int },
-            ]))
-        );
-
-        assert_eq!(
-            source(",&name:String&age:Int ,str.String ,Int").parse_tuple(),
-            Ok(Expression::Tuple(vec![
-                Expression::Product(vec![
-                    ProductMember {
-                        name: "name".to_owned(),
-                        expression: name!{ String },
-                        operator: ':'
-                    },
-                    ProductMember {
-                        name: "age".to_owned(),
-                        expression: name!{ Int },
-                        operator: ':'
-                    },
-                ]),
-                name!{ str.String },
-                name!{ Int },
-            ]))
-        );*/
-    }
-
-
-    #[test]
-    fn test_parse_sum_or_other_kind(){
-        /*assert_eq!(source(" std .str .String ->").parse_sum(), Ok(name!{ std.str.String }));
-
-        assert_eq!(
-            source("| name: std.String | anonymous").parse_sum(),
-            Ok(Expression::Sum(vec![
-                Variant {
-                    name: "name".to_string(),
-                    content: Some(VariantContent {
-                        expression: name!{ std.String },
-                        operator:':'
-                    })
-                },
-                Variant {
-                    name: "anonymous".to_string(),
-                    content: None
-                }
-            ] ))
-        );
-
-        assert_eq!(
-            source("| name: &value: std.String &length: Int | anonymous").parse_sum(),
-            Ok(Expression::Sum(vec![
-                Variant {
-                    name: "name".to_string(),
-                    content: Some(VariantContent {
-                        expression: Expression::Product(vec![
-                            ProductMember {
-                                name: "value".to_owned(),
-                                expression: name!{ std.String },
-                                operator: ':'
-                            },
-
-                            ProductMember {
-                                name: "length".to_owned(),
-                                expression: name!{ Int },
-                                operator: ':'
-                            },
-                        ]),
-                        operator:':'
-                    })
-                },
-                Variant {
-                    name: "anonymous".to_string(),
-                    content: None,
-                },
-            ] ))
-        );*/
-    }
-
-    #[test]
-    fn test_parse_product_or_other_kind(){
-        /*assert_eq!(source(" String").parse_product(), Ok(name!{ String }));
-        assert_eq!(source(" std.String").parse_product(), Ok(name!{ std.String }));
-        assert_eq!(source(" std .str .String").parse_product(), Ok(name!{ std.str.String }));
-
-        assert_eq!(
-            source("& name: String &age : num.Int").parse_product(),
-            Ok(Expression::Product(vec![
-                ProductMember {
-                    name: "name".to_owned(),
-                    expression: name!{ String },
-                    operator: ':'
-                },
-                ProductMember {
-                    name: "age".to_owned(),
-                    expression: name!{ num.Int },
-                    operator: ':'
-                },
-            ]))
-        );
-
-        assert_eq!(
-            source(r#"& name = "world" &age = 12"#).parse_product(),
-            Ok(Expression::Product(vec![
-
-                ProductMember {
-                    name: "name".to_owned(),
-                    expression: Expression::String("world".to_owned()),
-                    operator: '='
-                },
-
-                ProductMember {
-                    name: "age".to_owned(),
-                    expression: Expression::Number("12".to_owned()),
-                    operator: '='
-                },
-            ]))
-        );*/
-    }
 
     #[test]
     fn test_parse_chained_identifier(){
-//        assert_eq!(source("hello world").parse_reference(), Ok(name!{ hello }));
-//        assert_eq!(source("hello.world").parse_reference(), Ok(name!{ hello.world }));
-//        assert_eq!(source(" the .world ").parse_reference(), Ok(name!{ the.world }));
-//        assert_eq!(source("hello .world but not this").parse_reference(), Ok(name!{ hello.world }));
-//        assert_eq!(source("hello .world@").parse_reference(), Ok(name!{ hello.world }));
-    }
-
-    #[test]
-    fn test_parse_identifier(){
-        assert_eq!(source("hello world").parse_atom(), Ok(Token::Identifier("hello".to_owned())));
-        assert_eq!(source("hello.world").parse_atom(), Ok(Token::Identifier("hello".to_owned())));
-        assert_eq!(source(" the .world ").parse_atom(), Ok(Token::Identifier("the".to_owned())));
-        assert_eq!(source(" world+").parse_atom(), Ok(Token::Identifier("world+".to_owned())));
-        assert_eq!(source(" world@").parse_atom(), Ok(Token::Identifier("world".to_owned())));
-        // assert_panics!(parse_identifier("("), (("", "(")));
-        // assert_panics!(parse_identifier(""), (("", "")));
+        assert_eq!(source("hello world").parse_access(), Ok(tokens!{ identifier hello }));
+        assert_eq!(source("hello_world").parse_access(), Ok(tokens!{ identifier hello_world }));
+        assert_eq!(source("hello . world.there").parse_access(), Ok(tokens!{ identifiers hello.world.there }));
     }
 
     #[test]
