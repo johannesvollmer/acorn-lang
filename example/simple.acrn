@@ -135,10 +135,11 @@ display_name person = maybe.with_default "unknown" (maybe.map person $.name)
 
 // multi line functions
 full_name = person ->
-  first & last = person.name
-  first ++ " " ++ last
+  first ++ " " ++ last,
+    (&first &last) = person.name
 
-
+// TODO decide on how whitespace is handled at all,
+// in match branches and in function subdefinitions
 
 
 // in module vec2:
@@ -168,7 +169,7 @@ List = T =>
 
 
 // type parameter destructuring:
-Dict = (A, B) => ...
+Dict = (A, B) => // ...
 
 Result = (& error: E & result: T) =>
   result: T | error: E
@@ -194,11 +195,15 @@ pi_explicit = std.float.32.literals. 3.14159265
 pi_imported: f32 = 3.14159265
 
 
+list: [T] = [a, b, c]
 
 
 // GENERICS:
+apply_tuple : Fn => ((Fn, Fn.Arg) -> Fn.Result) =
+ fn arg -> fn arg
 
-
-
-
+// example type:
+IntFn =
+  &Arg = Int
+  &Result = Int
 

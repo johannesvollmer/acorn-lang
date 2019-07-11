@@ -8,9 +8,14 @@ pub type Reference = Vec<String>;
 
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
 struct Tokenizer<'s> {
-    pub line_indentation: usize,
-    pub line_number: usize,
+    // immediate location where we are currently parsing
+    pub symbol_indentation: usize,
+    pub symbol_line_number: usize,
     pub line_byte_index: usize,
+
+    // location where the last (current) element was placed
+    pub element_line_number: usize,
+    pub element_indentation: usize,
 
     pub source: &'s str,
     pub remaining: &'s str,
@@ -110,9 +115,11 @@ pub fn tokenize(file: &str) -> ParseResult<Token> {
 impl<'s> Tokenizer<'s> {
     fn new(text: &str) -> Tokenizer {
         Tokenizer {
-            line_indentation: 0,
-            line_number: 0,
+            symbol_indentation: 0,
+            symbol_line_number: 0,
             line_byte_index: 0,
+            element_line_number: 0,
+            element_indentation: 0,
             source: text,
             remaining: text
         }
@@ -120,7 +127,7 @@ impl<'s> Tokenizer<'s> {
 
     fn location(&self) -> SourceLocation {
         SourceLocation {
-            line_number: self.line_number,
+            line_number: self.symbol_line_number,
             line_byte_index: self.line_byte_index,
             absolute_byte_location: self.source.len() - self.remaining.len(),
         }
@@ -146,6 +153,7 @@ impl<'s> Tokenizer<'s> {
     }
 
     fn parse_element(&mut self) -> ParseResult<Token> {
+        println!("\n\nparse_element: `{}`", self.remaining);
         self.parse_assignment()
     }
 
@@ -156,15 +164,17 @@ impl<'s> Tokenizer<'s> {
     // =>
     // ->
     // @
-    // \t
     // ,
     // &
-    // = (inside structures, assignments have highest level again)
-    // : (inside structures, annotations have second highest level again)
+    //      = (inside structures, assignments have highest level again)
+    //      : (inside structures, annotations have second highest level again)
+
     // |
-    // = (inside variants, assignments have highest level again)
-    // : (inside variants, annotations have second highest level again)
+    //      = (inside variants, assignments have highest level again)
+    //      : (inside variants, annotations have second highest level again)
+
     // function argument
+    // [indented scope]
     // .
     // ()
     // ""
@@ -245,11 +255,19 @@ impl<'s> Tokenizer<'s> {
     }
 
     fn parse_application(&mut self) -> ParseResult<Token> {
+        self.skip_white()?;
+
+//        let line = self.symbol_line_number;
+//        let indentation = self.symbol_line_number;
         let function = self.parse_scope()?;
 
         self.skip_white()?;
 
-        if !self.remaining.is_empty() && (
+        let indented_or_inline =
+            self.symbol_line_number == self.element_line_number || self.symbol_indentation > self.element_indentation;
+
+        // TODO make this more flexible!
+        if !self.remaining.is_empty() && indented_or_inline && (
             !self.char_is_next(Self::is_special_symbol) ||
             self.char_is_next(|c: char| c == '(' || c == '$' || c == '"')
         ) {
@@ -272,6 +290,7 @@ impl<'s> Tokenizer<'s> {
 
     /// parse either brackets, string literals, or identifiers (including number literals)
     fn parse_atom(&mut self) -> ParseResult<Token> {
+        println!("parse_atom, remaining: `{}`", self.remaining);
         self.skip_white()?;
 
         if self.skip_symbol("(") {
@@ -305,18 +324,34 @@ impl<'s> Tokenizer<'s> {
         else_parser: impl Fn(&mut Self) -> ParseResult<Token>
     ) -> ParseResult<Token>
     {
-        let old_indentation = self.line_indentation;
-        let old_line = self.line_number;
+        let old_indentation = self.element_indentation;
+        let old_line = self.element_line_number;
+        println!("testing for indentation. currently: {}:{}, remaining: `{}`", old_line, old_indentation, self.remaining);
 
         self.skip_white()?;
 
-        if self.line_number != old_line && self.line_indentation > old_indentation {
+        if self.symbol_line_number != old_line && self.symbol_indentation > old_indentation {
+            println!("detected indentation. now: {}:{}, remaining: `{}`", self.symbol_line_number, self.symbol_indentation, self.remaining);
+
+//            let mut scope_parser = *self;
+//            scope_parser.last_element_line_number = self.line_number;
+//            scope_parser.last_element_indentation = self.line_indentation;
+            self.element_indentation = self.symbol_indentation;
+            self.element_line_number = self.symbol_line_number;
+
             let mut lines = Vec::new();
 
             loop {
                 self.skip_white()?;
 
-                if self.line_indentation <= old_indentation {
+                if self.symbol_indentation <= old_indentation || self.remaining.is_empty() {
+//                    self.remaining = scope_parser.remaining;
+//                    self.line_number = scope_parser.line_number;
+//                    self.line_indentation = scope_parser.line_indentation;
+//                    self.line_byte_index = scope_parser.line_byte_index;
+
+                    self.element_indentation = old_indentation;
+                    self.element_line_number = old_line;
                     break Ok(Token::Scope(lines));
                 }
 
@@ -484,8 +519,8 @@ impl<'s> Tokenizer<'s> {
     fn skip_white(&mut self) -> ParseResult<()> {
         loop {
             if self.skip_symbol("\n") {
-                self.line_number += 1;
-                self.line_indentation = 0;
+                self.symbol_line_number += 1;
+                self.symbol_indentation = 0;
                 self.line_byte_index = 0;
             }
 
@@ -493,11 +528,11 @@ impl<'s> Tokenizer<'s> {
 
                 // line_indentation counts the spaces, and the space char is 1 byte,
                 // so we can simply compare line_byte_index and indentation
-                if self.line_indentation + 1 == self.line_byte_index {
+                if self.symbol_indentation + 1 == self.line_byte_index {
 
                     // as long as the remaining line starts with a whitespace,
                     // pull the line_indentation along with the byte index
-                    self.line_indentation += 1;
+                    self.symbol_indentation += 1;
                 }
             }
 
@@ -567,8 +602,20 @@ mod test {
         Token::Scope(members.to_owned())
     }
 
+    fn matching(value: Token, members: &[Token]) -> Token {
+        Token::Match(Box::new(value), members.to_owned())
+    }
+
+    fn conditions(members: &[Token]) -> Token {
+        Token::Conditions(members.to_owned())
+    }
+
     fn annotate(subject: Token, annotation: Token) -> Token {
         Token::Annotation(Box::new(subject), Box::new(annotation))
+    }
+
+    fn branch(condition: Option<Token>, result: Token) -> Token {
+        Token::Branch(condition.map(Box::new), Box::new(result))
     }
 
     fn assign(binding: Token, value: Token) -> Token {
@@ -591,9 +638,11 @@ mod test {
 
     fn source(source: &str) -> Tokenizer {
         Tokenizer {
-            line_indentation: 0,
-            line_number: 0,
+            symbol_indentation: 0,
+            symbol_line_number: 0,
             line_byte_index: 0,
+            element_line_number: 0,
+            element_indentation: 0,
             remaining: source,
             source,
         }
@@ -710,27 +759,62 @@ mod test {
         ));
 
 
-        let indented_source = r#"
-            fn = a -> b
-        "#;
-
+        let indented_source =
+r#"
+fn = a -> b
+"#;
         assert_eq!(source(indented_source).parse_element(), Ok(
             assign(id("fn"), function(id("a"), id("b")))
         ));
 
 
-        let indented_source = r#"
-            fn = a ->
-                d = &a
-                d.a
-        "#;
 
+        let indented_source =
+            r#"
+fn = a ->
+    d = &a
+    d.a
+"#;
         assert_eq!(source(indented_source).parse_element(), Ok(
             assign(id("fn"), function(
                 id("a"),
                 scope(&[
                     assign(id("d"), structure(&[id("a")])),
                     access(&["d", "a"])
+                ])
+            ))
+        ));
+
+
+
+        let indented_source =
+r#"
+c = t ->
+  x = compute 0.3
+
+  xt = x
+    @5: always 6
+    @6: always 5
+    @: x -> x
+
+  compute_again xt
+"#;
+        assert_eq!(source(indented_source).parse_element(), Ok(
+            assign(id("c"), function(
+                id("t"),
+                scope(&[
+                    assign(
+                        id("x"),
+                        apply(id("compute"),access(&["0", "3"]))
+                    ),
+                    assign(
+                        id("xt"),
+                        matching(id("x"), &[
+                            branch(Some(id("5")), apply(id("always"), id("6"))),
+                            branch(Some(id("6")), apply(id("always"), id("5"))),
+                            branch(None, function(id("x"), id("x")))
+                        ])
+                    ),
                 ])
             ))
         ));
@@ -771,35 +855,35 @@ mod test {
         let mut src : Tokenizer = source("a\nb \n  c\n d ");
 
         src.skip_white().unwrap();
-        assert_eq!(src.line_number, 0);
+        assert_eq!(src.symbol_line_number, 0);
 
         src.skip_required_symbol("a").unwrap();
         println!("skipped a {:?}", src);
         src.skip_white().unwrap();
-        assert_eq!(src.line_number, 1);
-        assert_eq!(src.line_indentation, 0);
+        assert_eq!(src.symbol_line_number, 1);
+        assert_eq!(src.symbol_indentation, 0);
 
 
         src.skip_required_symbol("b").unwrap();
         println!("skipped b {:?}", src);
-        assert_eq!(src.line_number, 1);
-        assert_eq!(src.line_indentation, 0);
+        assert_eq!(src.symbol_line_number, 1);
+        assert_eq!(src.symbol_indentation, 0);
         src.skip_white().unwrap();
-        assert_eq!(src.line_number, 2);
-        assert_eq!(src.line_indentation, 2);
+        assert_eq!(src.symbol_line_number, 2);
+        assert_eq!(src.symbol_indentation, 2);
 
         src.skip_required_symbol("c").unwrap();
         println!("skipped c {:?}", src);
         src.skip_white().unwrap();
-        assert_eq!(src.line_number, 3);
-        assert_eq!(src.line_indentation, 1);
+        assert_eq!(src.symbol_line_number, 3);
+        assert_eq!(src.symbol_indentation, 1);
 
         src.skip_required_symbol("d").unwrap();
-        assert_eq!(src.line_number, 3);
-        assert_eq!(src.line_indentation, 1);
+        assert_eq!(src.symbol_line_number, 3);
+        assert_eq!(src.symbol_indentation, 1);
         src.skip_white().unwrap();
-        assert_eq!(src.line_number, 3);
-        assert_eq!(src.line_indentation, 1);
+        assert_eq!(src.symbol_line_number, 3);
+        assert_eq!(src.symbol_indentation, 1);
 
 
     }
