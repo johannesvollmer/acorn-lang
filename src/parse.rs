@@ -1,9 +1,6 @@
 use super::tokenize;
 use std::collections::HashMap;
 
-type FunctionId = usize;
-
-
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Module {
@@ -118,6 +115,10 @@ pub enum CompileError {
 pub enum ExpressionKind {
     Value, Kind, Unknown
 }
+
+
+
+
 
 /*
 
